@@ -106,7 +106,7 @@ def parse_blocks(lines):
     return root
 
 RESERVED_KEYWORDS = {
-    "globalvar", "localvar", "function", "dofunc", "if", "else", "until", 
+    "globalvar", "localvar", "globvar", "function", "dofunc", "if", "else", "until", 
     "while", "repeat", "addlib", "try", "catch", "exitloop", "wait", 
     "warn", "critical", "exit", "env"
 }
@@ -130,7 +130,7 @@ def pre_run_checks(nodes, state):
             sys.exit(1)
         
         # Check variable declarations for pure numbers or keywords
-        var_match = re.match(r'^(?:globalvar|localvar)\s+([^=+\-*/%^\$\s]+)', line)
+        var_match = re.match(r'^(?:globalvar|localvar|globvar)\s+([^=+\-*/%^\$\s]+)', line)
         if var_match:
             name = var_match.group(1)
             if name.isdigit():
@@ -156,7 +156,7 @@ def pre_run_checks(nodes, state):
             pre_run_checks(children, state)
 
 def evaluate(expr, local_vars, global_vars):
-    # Convert Vex '=' comparison to Python '==' where appropriate
+    # Convert Vex '=' comparison to Python '== 'where appropriate
     expr = re.sub(r'(?<![<>!=])=(?![=])', '==', expr)
     
     # Strip event placeholders (just default to False for CLI support)
@@ -164,7 +164,8 @@ def evaluate(expr, local_vars, global_vars):
     
     env = DefaultEnv()
     env.update(global_vars)
-    env.update(local_vars)
+    if isinstance(local_vars, dict):
+        env.update(local_vars)
     env['input'] = VexInput()
     
     # Ensure standard True/False mappings
@@ -247,11 +248,11 @@ def run_ast(nodes, local_vars, global_vars, functions, state):
                 out = "".join(str(x) for x in val).replace('\\n', '\n').replace('\\t', '\t')
                 print(out)
                 
-        elif line.startswith('globalvar ') or line.startswith('localvar '):
-            match = re.match(r'(globalvar|localvar)\s+([a-zA-Z_]\w*)\s*([=+\-*/%^\$])\s*(.*)', line)
+        elif line.startswith('globalvar ') or line.startswith('localvar ') or line.startswith('globvar '):
+            match = re.match(r'(globalvar|localvar|globvar)\s+([a-zA-Z_]\w*)\s*([=+\-*/%^\$])\s*(.*)', line)
             if match:
                 vtype, name, op, expr = match.groups()
-                target_env = global_vars if vtype == 'globalvar' else local_vars
+                target_env = global_vars if vtype in ('globalvar', 'globvar') else local_vars
                 
                 if op == '$':
                     target_env[name] = not target_env.get(name, False)
@@ -311,7 +312,43 @@ def run_ast(nodes, local_vars, global_vars, functions, state):
         elif line.startswith('dofunc '):
             func_name = line[7:line.find('(')].strip()
             args_str = line[line.find('(')+1 : line.rfind(')')]
-            kwargs = evaluate(f"dict({args_str})" if args_str.strip() else "dict()", local_vars, global_vars)
+            
+            kwargs = {}
+            if args_str.strip():
+                # Balanced parser for comma-separated parameters
+                parts = []
+                current = []
+                in_str = False
+                str_char = ''
+                paren_depth = 0
+                for char in args_str:
+                    if char in ('"', "'", '“', '”', '‘', '’'):
+                        normalized_char = '"' if char in ('"', '“', '”') else "'"
+                        if not in_str:
+                            in_str = True
+                            str_char = normalized_char
+                        elif normalized_char == str_char:
+                            in_str = False
+                    elif not in_str:
+                        if char == '(':
+                            paren_depth += 1
+                        elif char == ')':
+                            paren_depth -= 1
+                        elif char == ',' and paren_depth == 0:
+                            parts.append("".join(current).strip())
+                            current = []
+                            continue
+                    current.append(char)
+                if current:
+                    parts.append("".join(current).strip())
+                
+                # Evaluate parameters item by item inside parent scope
+                for part in parts:
+                    if '=' in part:
+                        p_name, p_expr = part.split('=', 1)
+                        p_name = p_name.strip()
+                        p_expr = p_expr.strip()
+                        kwargs[p_name] = evaluate(p_expr, local_vars, global_vars)
             
             if func_name in functions:
                 res = run_ast(functions[func_name], kwargs, global_vars, functions, state)
