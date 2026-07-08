@@ -11,6 +11,7 @@ HOST = '127.0.0.1'
 PORT = 65432
 
 def start_gui_daemon():
+    """Starts the persistent Tkinter window process decoupled from the terminal."""
     root = tk.Tk()
     root.title("Vex Window Daemon")
     root.geometry("400x300")
@@ -18,7 +19,6 @@ def start_gui_daemon():
     widgets = {}
     
     def process_command(cmd):
-        """Executes Tkinter operations safely on the main thread."""
         action = cmd.get("action")
         w_id = cmd.get("id")
         
@@ -37,7 +37,7 @@ def start_gui_daemon():
         elif action == "update_text":
             if w_id in widgets:
                 widgets[w_id].config(text=cmd["text"])
-                root.update_idletasks()  # Forces Tkinter to redraw the visual text immediately
+                root.update_idletasks()
         elif action == "close":
             root.destroy()
 
@@ -48,8 +48,6 @@ def start_gui_daemon():
                 if not data:
                     return
                 cmd = json.loads(data)
-                
-                # Push the command safely to Tkinter's main loop thread
                 root.after(0, lambda: process_command(cmd))
                 conn.sendall(b"OK")
             except Exception as e:
@@ -80,11 +78,9 @@ def send_command(command_dict):
         return "DAEMON_NOT_RUNNING"
 
 def extract_arg(args, key):
-    """Safely extracts arguments even if they contain spaces."""
     for arg in args:
         if arg.startswith(f"{key}="):
             return arg.split("=", 1)[1].strip('"')
-    # Fallback to reconstructing if spaces split the arguments
     full_str = " ".join(args)
     if f"{key}=" in full_str:
         try:
@@ -106,13 +102,46 @@ def main():
     if opcode == "init":
         status = send_command({"action": "ping"})
         if status == "DAEMON_NOT_RUNNING":
-            pid = os.fork()
-            if pid == 0:
-                os.setsid()
-                start_gui_daemon()
-                sys.exit(0)
-            else:
-                print("SUCCESS")
+            # --- DOUBLE FORK TECHNIQUE TO RELEASE VEX ---
+            try:
+                pid = os.fork()
+                if pid > 0:
+                    # First parent exits immediately to give control back to Vex
+                    print("SUCCESS")
+                    sys.exit(0)
+            except OSError as e:
+                print(f"Fork #1 failed: {e}", file=sys.stderr)
+                sys.exit(1)
+
+            # Decouple from parent environment
+            os.chdir("/")
+            os.setsid()
+            os.umask(0)
+
+            # Do second fork to release terminal control completely
+            try:
+                pid = os.fork()
+                if pid > 0:
+                    # Exit from second parent loop
+                    sys.exit(0)
+            except OSError as e:
+                print(f"Fork #2 failed: {e}", file=sys.stderr)
+                sys.exit(1)
+
+            # Redirect standard file descriptors so Vex doesn't hang onto open pipes
+            sys.stdout.flush()
+            sys.stderr.flush()
+            si = open(os.devnull, 'r')
+            so = open(os.devnull, 'a+')
+            se = open(os.devnull, 'a+')
+            
+            os.dup2(si.fileno(), sys.stdin.fileno())
+            os.dup2(so.fileno(), sys.stdout.fileno())
+            os.dup2(se.fileno(), sys.stderr.fileno())
+
+            # Now start the daemon completely orphaned in the background
+            start_gui_daemon()
+            sys.exit(0)
         else:
             print("ALREADY_RUNNING")
             
