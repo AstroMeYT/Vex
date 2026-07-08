@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vex Smart Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Greyscale custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #030712; }
+        ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #374151; }
+        
+        /* Hide scrollbars for line numbers & highlight layer to prevent double scrolls */
+        #line-numbers::-webkit-scrollbar { display: none; }
+        #line-numbers { -ms-overflow-style: none; scrollbar-width: none; }
+
+        #highlight-layer::-webkit-scrollbar { display: none; }
+        #highlight-layer { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        .tab-btn {
+            border-bottom: 2px solid transparent;
+        }
+        .tab-btn.active {
+            background-color: #111827;
+            border-bottom: 2px solid #9ca3af;
+            color: #f9fafb;
+        }
+        
+        .snippet-item.active-item {
+            background-color: #374151;
+            color: #ffffff;
+        }
+
+        /* Ensure perfect layout match for line-numbers, highlighter and textarea layers */
+        .code-layer {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.875rem; /* text-sm: 14px */
+            line-height: 1.5rem; /* leading-6: 24px */
+            padding: 1.5rem; /* p-6 */
+            margin: 0;
+            border: none;
+            white-space: pre; /* Do not wrap to ensure line numbers map 1-to-1 perfectly */
+            word-wrap: normal;
+            tab-size: 4; /* Render tab characters uniformly */
+            -moz-tab-size: 4;
+        }
+        
+        .snippet-sidebar-btn.active {
+            background-color: #1f2937;
+            border-left: 3px solid #9ca3af;
+            color: #f9fafb;
+        }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-300 font-sans h-screen flex flex-col overflow-hidden selection:bg-gray-800/50">
+
+    <!-- Top Navigation Bar -->
+    <div class="w-full bg-gray-900 border-b border-gray-800 flex items-center px-4 flex-shrink-0 z-20 shadow-sm">
+        <div class="py-3 pr-6 border-r border-gray-800 mr-2 flex items-center">
+            <h1 class="text-xl font-bold text-gray-100 tracking-wide">VEX<span class="text-gray-500"> IDE</span></h1>
+        </div>
+        <nav class="flex-1 flex gap-1 overflow-x-auto" id="tab-navigation">
+            <button onclick="switchTab('editor')" class="tab-btn active px-4 py-3 text-sm text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                Editor
+            </button>
+            <button onclick="switchTab('variables')" class="tab-btn px-4 py-3 text-sm text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
+                Variables <span id="var-count" class="ml-1 bg-gray-800 text-gray-300 text-xs py-0.5 px-2 rounded-full">0</span>
+            </button>
+            <button onclick="switchTab('functions')" class="tab-btn px-4 py-3 text-sm text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5"></path></svg>
+                Functions <span id="func-count" class="ml-1 bg-gray-800 text-gray-300 text-xs py-0.5 px-2 rounded-full">0</span>
+            </button>
+            <button onclick="switchTab('snippets')" class="tab-btn px-4 py-3 text-sm text-gray-400 hover:text-gray-200 transition-colors flex items-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                Snippets
+            </button>
+        </nav>
+        <div class="pl-4 border-l border-gray-800">
+            <button onclick="downloadVex()" class="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded text-sm transition-colors border border-gray-700 shadow-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                Download .vex
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="flex-1 flex relative min-w-0 bg-gray-950">
+        
+        <!-- Editor View (Tri-layer for Line Numbers, Highlighting & Input) -->
+        <div id="view-editor" class="h-full flex relative w-full overflow-hidden">
+            
+            <!-- Dynamic Line Numbers Gutter -->
+            <div id="line-numbers" class="w-12 bg-gray-950 text-gray-600 font-mono text-sm leading-6 py-6 pr-3 border-r border-gray-900 text-right select-none overflow-y-scroll flex-shrink-0">
+                <!-- Injected via Javascript -->
+            </div>
+            
+            <!-- Code Typing/Highlighting Box -->
+            <div class="flex-1 h-full relative overflow-hidden">
+                <!-- Render Layer (Displays Syntactical Colors) -->
+                <pre id="highlight-layer" aria-hidden="true" class="code-layer absolute inset-0 w-full h-full text-gray-300 bg-gray-950 pointer-events-none overflow-auto z-0"></pre>
+                
+                <!-- Interaction Layer (Textarea with fully transparent content) -->
+                <textarea id="code-editor" spellcheck="false" class="code-layer absolute inset-0 w-full h-full outline-none resize-none bg-transparent overflow-auto z-10" style="color: transparent; caret-color: #f3f4f6;"></textarea>
+                
+                <!-- Autocomplete Popup Box -->
+                <div id="autocomplete-popup" class="hidden absolute bg-gray-800 border border-gray-600 rounded shadow-2xl z-50 w-64 max-h-64 overflow-y-auto flex flex-col text-sm py-1 font-mono">
+                    <!-- Items populated via JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Variables View -->
+        <div id="view-variables" class="hidden h-full w-full overflow-y-auto p-8 bg-gray-950">
+            <h2 class="text-2xl font-semibold text-gray-100 mb-6">Parsed Variables</h2>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <!-- Globals -->
+                <div class="bg-gray-900 rounded-lg p-6 border border-gray-800 shadow-sm">
+                    <h3 class="text-lg font-medium text-gray-200 mb-4 flex items-center border-b border-gray-800 pb-2">Global Scope</h3>
+                    <ul id="global-vars-list" class="space-y-2 font-mono text-sm text-gray-400">
+                        <li class="text-gray-600 italic">No global variables detected.</li>
+                    </ul>
+                </div>
+
+                <!-- Locals -->
+                <div class="bg-gray-900 rounded-lg p-6 border border-gray-800 shadow-sm">
+                    <h3 class="text-lg font-medium text-gray-200 mb-4 flex items-center border-b border-gray-800 pb-2">Local Scope</h3>
+                    <ul id="local-vars-list" class="space-y-2 font-mono text-sm text-gray-400">
+                        <li class="text-gray-600 italic">No local variables detected.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Functions View -->
+        <div id="view-functions" class="hidden h-full w-full overflow-y-auto p-8 bg-gray-950">
+            <h2 class="text-2xl font-semibold text-gray-100 mb-6">Parsed Functions</h2>
+            <div class="bg-gray-900 rounded-lg p-6 border border-gray-800 shadow-sm max-w-2xl">
+                <ul id="functions-list" class="space-y-3 font-mono text-sm text-gray-400">
+                    <li class="text-gray-600 italic">No functions detected.</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Snippets View (Split Sidebar/Workspace Layout) -->
+        <div id="view-snippets" class="hidden h-full w-full flex overflow-hidden bg-gray-950">
+            
+            <!-- Snippets Left Sidebar -->
+            <div class="w-64 border-r border-gray-800 bg-gray-900 flex flex-col h-full flex-shrink-0">
+                <div class="p-4 border-b border-gray-800 flex items-center justify-between">
+                    <span class="text-xs font-bold text-gray-400 tracking-wider uppercase">Saved Snippets</span>
+                    <button onclick="selectSnippet(null)" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 px-2.5 py-1 rounded transition-colors flex items-center gap-1" title="Create New Snippet">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                        New
+                    </button>
+                </div>
+                <!-- Sidebar scrollable list -->
+                <div id="snippets-sidebar-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+                    <!-- Populated via JS -->
+                </div>
+            </div>
+            
+            <!-- Snippet Details/Edit/Create Panel -->
+            <div id="snippet-workspace" class="flex-1 overflow-y-auto p-8">
+                <!-- Rendered Dynamically (New Form or View/Edit Panel) -->
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // --- State Management ---
+        const state = {
+            snippets: [],
+            selectedSnippetName: null, // Tracks currently opened snippet
+            globals: new Set(),
+            locals: new Set(),
+            functions: new Set(),
+            autocompleteActive: false,
+            autocompleteFilter: "",
+            autocompleteIndex: 0,
+            filteredSnippets: []
+        };
+
+        const editor = document.getElementById('code-editor');
+        const highlightLayer = document.getElementById('highlight-layer');
+        const popup = document.getElementById('autocomplete-popup');
+        const lineNumbers = document.getElementById('line-numbers');
+        
+        const placeholderText = "# Start writing Vex code here...\n\nglobalvar greeting = \"Hello World!\"\nprint(greeting)";
+
+        // Segmenting keywords for distinct color assignments
+        const DECLARATION_KEYWORDS = ['globalvar', 'localvar', 'function'];
+        const CONTROL_KEYWORDS = ['if', 'else', 'until', 'while', 'repeat', 'try', 'catch', 'exitloop', 'exit', 'env'];
+        const BUILTIN_KEYWORDS = ['print', 'input', 'wait', 'warn', 'critical', 'addlib', 'dofunc'];
+        const BOOLEAN_KEYWORDS = ['True', 'False', 'true', 'false'];
+        
+        const VEX_KEYWORDS = [...DECLARATION_KEYWORDS, ...CONTROL_KEYWORDS, ...BUILTIN_KEYWORDS, ...BOOLEAN_KEYWORDS];
+
+        // --- STREAMING_CHUNK:Setting up database... ---
+        // --- IndexedDB Setup for Snippets ---
+        const dbName = 'VexEditorDB_Grayscale_v2';
+        let db;
+
+        const initDB = () => {
+            const request = indexedDB.open(dbName, 1);
+            request.onerror = (e) => console.error("Database error:", e.target.error);
+            request.onupgradeneeded = (e) => {
+                const database = e.target.result;
+                if (!database.objectStoreNames.contains('snippets')) {
+                    const store = database.createObjectStore('snippets', { keyPath: 'name' });
+                    // Using actual tab characters (\t) inside template literals to match Vex interpreter rules
+                    store.add({ name: 'loop_until', code: 'until (1 = 0)\n\t# logic here\n\texitloop' });
+                    store.add({ name: 'try_catch', code: 'try\n\t# code that might fail\ncatch\n\twarn("An error occurred")' });
+                    store.add({ name: 'function_def', code: 'function myFunc\n\t# func code here\n\texit' });
+                    store.add({ name: 'global_var', code: 'globalvar myVar = 0' });
+                }
+            };
+            request.onsuccess = (e) => {
+                db = e.target.result;
+                loadSnippets();
+            };
+        };
+
+        const loadSnippets = () => {
+            const tx = db.transaction('snippets', 'readonly');
+            const store = tx.objectStore('snippets');
+            const request = store.getAll();
+            request.onsuccess = () => {
+                state.snippets = request.result;
+                renderSnippetsSidebar();
+                renderSnippetWorkspace();
+            };
+        };
+
+        window.saveSnippet = () => {
+            const nameInput = document.getElementById('snippet-name');
+            const codeInput = document.getElementById('snippet-code');
+            const name = nameInput.value.trim().replace(/[^a-zA-Z0-9_]/g, '');
+            const code = codeInput.value;
+
+            if (!name || !code) {
+                showMessage("Both fields are required.");
+                return;
+            }
+
+            const tx = db.transaction('snippets', 'readwrite');
+            const store = tx.objectStore('snippets');
+            store.put({ name, code });
+            tx.oncomplete = () => {
+                state.selectedSnippetName = name; // Auto-select the newly added snippet
+                loadSnippets();
+                showMessage("Snippet saved.");
+            };
+        };
+
+        window.updateSnippetCode = (name) => {
+            const codeInput = document.getElementById('edit-snippet-code');
+            const code = codeInput.value;
+
+            if (!code) {
+                showMessage("Snippet content cannot be empty.");
+                return;
+            }
+
+            const tx = db.transaction('snippets', 'readwrite');
+            const store = tx.objectStore('snippets');
+            store.put({ name, code });
+            tx.oncomplete = () => {
+                loadSnippets();
+                showMessage("Snippet updated.");
+            };
+        };
+
+        window.deleteSnippet = (name) => {
+            const tx = db.transaction('snippets', 'readwrite');
+            const store = tx.objectStore('snippets');
+            store.delete(name);
+            tx.oncomplete = () => {
+                state.selectedSnippetName = null; // Clear selection
+                loadSnippets();
+                showMessage("Snippet deleted.");
+            };
+        };
+
+        // --- File Download ---
+        window.downloadVex = () => {
+            let code = editor.value;
+            if (!code.trim()) code = placeholderText; // fallback to placeholder if empty
+            
+            const blob = new Blob([code], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'script.vex';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showMessage("File downloaded as script.vex");
+        };
+
+        // --- STREAMING_CHUNK:Configuring tabs and workspaces... ---
+        // --- Basic UI/Tab Navigation ---
+        window.switchTab = (tabId) => {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+            
+            ['editor', 'variables', 'functions', 'snippets'].forEach(id => {
+                document.getElementById(`view-${id}`).classList.add('hidden');
+            });
+            document.getElementById(`view-${tabId}`).classList.remove('hidden');
+
+            if (tabId === 'editor') {
+                editor.focus();
+                syncScroll();
+            }
+        };
+
+        const showMessage = (msg) => {
+            const div = document.createElement('div');
+            div.className = "fixed bottom-4 right-4 bg-gray-800 border border-gray-600 text-gray-200 px-6 py-3 rounded shadow-lg z-50 opacity-0 transition-opacity duration-300";
+            div.innerText = msg;
+            document.body.appendChild(div);
+            setTimeout(() => div.classList.remove('opacity-0'), 10);
+            setTimeout(() => {
+                div.classList.add('opacity-0');
+                setTimeout(() => div.remove(), 300);
+            }, 3000);
+        };
+
+        // --- Tab Key Override Helper for Workspace Textareas (inserts a literal tab character) ---
+        window.handleTabKey = (e) => {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const textarea = e.currentTarget;
+                const start = textarea.selectionStart;
+                const end = textarea.selectionEnd;
+                textarea.value = textarea.value.substring(0, start) + "\t" + textarea.value.substring(end);
+                textarea.selectionStart = textarea.selectionEnd = start + 1;
+            }
+        };
+
+        // --- Render Sidebar List & Workspace Panel ---
+        const renderSnippetsSidebar = () => {
+            const list = document.getElementById('snippets-sidebar-list');
+            if (state.snippets.length === 0) {
+                list.innerHTML = `<div class="text-xs text-gray-600 italic p-3 text-center">No snippets.</div>`;
+                return;
+            }
+            list.innerHTML = state.snippets.map(s => {
+                const isActive = s.name === state.selectedSnippetName;
+                return `
+                    <button onclick="selectSnippet('${s.name}')" class="snippet-sidebar-btn w-full text-left px-3 py-2 rounded text-sm font-mono transition-colors flex items-center justify-between group ${isActive ? 'active' : 'text-gray-400 hover:bg-gray-800/40 hover:text-gray-200'}">
+                        <span class="truncate">:${s.name}</span>
+                    </button>
+                `;
+            }).join('');
+        };
+
+        window.selectSnippet = (name) => {
+            state.selectedSnippetName = name;
+            renderSnippetsSidebar();
+            renderSnippetWorkspace();
+        };
+
+        const renderSnippetWorkspace = () => {
+            const ws = document.getElementById('snippet-workspace');
+            if (!state.selectedSnippetName) {
+                // Show Create Form
+                ws.innerHTML = `
+                    <div class="max-w-2xl bg-gray-900 border border-gray-800 p-6 rounded-lg shadow-sm">
+                        <h3 class="text-lg font-medium text-gray-100 mb-4">Create New Snippet</h3>
+                        <div class="flex flex-col gap-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Snippet Trigger (alphanumeric only)</label>
+                                <input type="text" id="snippet-name" placeholder="e.g., loop, trycatch" class="w-full bg-gray-950 border border-gray-800 rounded px-4 py-2 font-mono text-sm focus:outline-none focus:border-gray-500 text-gray-200">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Snippet Code</label>
+                                <textarea id="snippet-code" onkeydown="handleTabKey(event)" rows="12" placeholder="Write your Vex code snippet here..." spellcheck="false" class="w-full bg-gray-950 border border-gray-800 rounded px-4 py-3 font-mono text-sm focus:outline-none focus:border-gray-500 text-gray-200 resize-y"></textarea>
+                            </div>
+                            <button onclick="saveSnippet()" class="self-end bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-100 font-medium py-2 px-6 rounded transition-colors shadow-sm text-sm">
+                                Save Snippet
+                            </button>
+                        </div>
+                    </div>
+                `;
+            } else {
+                // Show Edit / Details Form
+                const s = state.snippets.find(x => x.name === state.selectedSnippetName);
+                if (!s) {
+                    state.selectedSnippetName = null;
+                    renderSnippetWorkspace();
+                    return;
+                }
+                ws.innerHTML = `
+                    <div class="max-w-2xl bg-gray-900 border border-gray-800 p-6 rounded-lg shadow-sm">
+                        <div class="flex justify-between items-center mb-6">
+                            <div>
+                                <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Viewing Snippet</span>
+                                <h3 class="text-xl font-mono font-bold text-gray-200 mt-1">:${s.name}</h3>
+                            </div>
+                            <button onclick="deleteSnippet('${s.name}')" class="text-red-400 hover:text-red-300 px-3 py-1.5 bg-red-400/10 hover:bg-red-400/20 border border-red-900/30 rounded text-xs font-medium transition-colors flex items-center gap-1">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                Delete
+                            </button>
+                        </div>
+                        <div class="flex flex-col gap-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Snippet Code (Editable)</label>
+                                <textarea id="edit-snippet-code" onkeydown="handleTabKey(event)" rows="12" spellcheck="false" class="w-full bg-gray-950 border border-gray-800 rounded px-4 py-3 font-mono text-sm focus:outline-none focus:border-gray-500 text-gray-200 resize-y">${s.code.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                            </div>
+                            <button onclick="updateSnippetCode('${s.name}')" class="self-end bg-gray-800 hover:bg-gray-700 border border-gray-600 text-gray-100 font-medium py-2 px-6 rounded transition-colors shadow-sm text-sm">
+                                Save Changes
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+        };
+
+        // --- STREAMING_CHUNK:Aligning line numbers... ---
+        // --- Dynamic Line Numbers & Scrolling Alignment ---
+        const updateLineNumbers = () => {
+            const code = editor.value;
+            const lines = code.split('\n');
+            const count = lines.length || 1;
+            
+            let numbersHtml = '';
+            for (let i = 1; i <= count; i++) {
+                numbersHtml += `<div style="height: 1.5rem; line-height: 1.5rem;">${i}</div>`;
+            }
+            lineNumbers.innerHTML = numbersHtml;
+        };
+
+        const syncScroll = () => {
+            highlightLayer.scrollTop = editor.scrollTop;
+            highlightLayer.scrollLeft = editor.scrollLeft;
+            lineNumbers.scrollTop = editor.scrollTop;
+        };
+        editor.addEventListener('scroll', syncScroll);
+
+        // --- STREAMING_CHUNK:Writing tokenizer parser... ---
+        // --- Syntax Highlighting logic ---
+        const tokenizeAndHighlight = (code) => {
+            if (!code) {
+                return `<span class="text-gray-600">${placeholderText.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>`;
+            }
+
+            let out = "";
+            let inString = false;
+            let strChar = '';
+            let inComment = false;
+            let wordBuffer = "";
+
+            const flushWord = () => {
+                if (!wordBuffer) return "";
+                if (!inString && !inComment) {
+                    if (DECLARATION_KEYWORDS.includes(wordBuffer)) {
+                        let res = `<span class="text-blue-400 font-bold">${wordBuffer}</span>`;
+                        wordBuffer = "";
+                        return res;
+                    }
+                    if (CONTROL_KEYWORDS.includes(wordBuffer)) {
+                        let res = `<span class="text-purple-400 font-semibold">${wordBuffer}</span>`;
+                        wordBuffer = "";
+                        return res;
+                    }
+                    if (BUILTIN_KEYWORDS.includes(wordBuffer)) {
+                        let res = `<span class="text-cyan-400 font-medium">${wordBuffer}</span>`;
+                        wordBuffer = "";
+                        return res;
+                    }
+                    if (BOOLEAN_KEYWORDS.includes(wordBuffer)) {
+                        let res = `<span class="text-orange-400 font-semibold">${wordBuffer}</span>`;
+                        wordBuffer = "";
+                        return res;
+                    }
+                    if (/^\d+$/.test(wordBuffer)) {
+                        let res = `<span class="text-amber-400">${wordBuffer}</span>`;
+                        wordBuffer = "";
+                        return res;
+                    }
+                }
+                let res = wordBuffer;
+                wordBuffer = "";
+                return res;
+            };
+
+            for (let i = 0; i < code.length; i++) {
+                const char = code[i];
+
+                if (inComment) {
+                    if (char === '\n') {
+                        inComment = false;
+                        out += char;
+                    } else {
+                        out += char === '<' ? '&lt;' : char === '>' ? '&gt;' : char === '&' ? '&amp;' : char;
+                    }
+                    continue;
+                }
+
+                if (inString) {
+                    out += char === '<' ? '&lt;' : char === '>' ? '&gt;' : char === '&' ? '&amp;' : char;
+                    if (char === strChar) {
+                        inString = false;
+                        out += '</span>';
+                    }
+                    continue;
+                }
+
+                if (char === '#') {
+                    out += flushWord();
+                    inComment = true;
+                    out += '<span class="text-gray-500 italic">#';
+                    continue;
+                }
+
+                if (char === '"' || char === "'" || char === '“' || char === '”') {
+                    out += flushWord();
+                    inString = true;
+                    strChar = char === '“' ? '”' : char; 
+                    out += `<span class="text-emerald-400">${char}`;
+                    continue;
+                }
+
+                if (/[a-zA-Z0-9_]/.test(char)) {
+                    wordBuffer += char;
+                } else {
+                    out += flushWord();
+                    out += char === '<' ? '&lt;' : char === '>' ? '&gt;' : char === '&' ? '&amp;' : char;
+                }
+            }
+            out += flushWord();
+            
+            if (inComment) out += '</span>';
+            if (inString) out += '</span>';
+
+            // Pad the end to ensure the cursor can move past the last line accurately
+            if (code.endsWith('\n')) out += ' '; 
+            
+            return out;
+        };
+
+        // --- STREAMING_CHUNK:Running Vex parsing engine... ---
+        // --- Parsing Logic ---
+        const parseCode = () => {
+            const code = editor.value;
+            
+            // 1. Update Highlight Layer
+            highlightLayer.innerHTML = tokenizeAndHighlight(code);
+
+            // 2. Update line numbers
+            updateLineNumbers();
+
+            // 3. Parse Variables/Functions
+            const lines = code.split('\n');
+            state.globals.clear();
+            state.locals.clear();
+            state.functions.clear();
+
+            lines.forEach(line => {
+                const varMatch = line.match(/^\s*(globalvar|localvar)\s+([^=+\-*/%^\$\s]+)/);
+                if (varMatch) {
+                    if (varMatch[1] === 'globalvar') state.globals.add(varMatch[2]);
+                    else state.locals.add(varMatch[2]);
+                }
+                
+                const funcMatch = line.match(/^\s*function\s+([^\s]+)/);
+                if (funcMatch) {
+                    state.functions.add(funcMatch[1]);
+                }
+            });
+
+            updateParsedViews();
+        };
+
+        const updateParsedViews = () => {
+            document.getElementById('var-count').innerText = state.globals.size + state.locals.size;
+            document.getElementById('func-count').innerText = state.functions.size;
+
+            const globList = document.getElementById('global-vars-list');
+            globList.innerHTML = state.globals.size === 0 
+                ? '<li class="text-gray-600 italic">No global variables detected.</li>' 
+                : Array.from(state.globals).map(v => `<li class="flex items-center gap-2"><span class="w-1.5 h-1.5 bg-gray-300 rounded-full"></span>${v}</li>`).join('');
+
+            const locList = document.getElementById('local-vars-list');
+            locList.innerHTML = state.locals.size === 0 
+                ? '<li class="text-gray-600 italic">No local variables detected.</li>' 
+                : Array.from(state.locals).map(v => `<li class="flex items-center gap-2"><span class="w-1.5 h-1.5 bg-gray-500 rounded-full"></span>${v}</li>`).join('');
+
+            const funcList = document.getElementById('functions-list');
+            funcList.innerHTML = state.functions.size === 0 
+                ? '<li class="text-gray-600 italic">No functions detected.</li>' 
+                : Array.from(state.functions).map(f => `<li class="flex items-center gap-2 text-gray-300"><svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>${f}()</li>`).join('');
+        };
+
+        // --- STREAMING_CHUNK:Configuring autocomplete coordinates... ---
+        // --- Smart Editor & Autocomplete Logic ---
+        const getCaretCoordinates = () => {
+            const mirror = document.createElement('div');
+            const style = window.getComputedStyle(editor);
+            for (let prop of style) mirror.style[prop] = style[prop];
+            mirror.style.position = 'absolute';
+            mirror.style.visibility = 'hidden';
+            mirror.style.whiteSpace = 'pre';
+            mirror.style.wordWrap = 'normal';
+            mirror.textContent = editor.value.substring(0, editor.selectionStart);
+            const span = document.createElement('span');
+            span.textContent = editor.value.substring(editor.selectionStart) || '.';
+            mirror.appendChild(span);
+            document.body.appendChild(mirror);
+            
+            const top = span.offsetTop - editor.scrollTop;
+            const left = span.offsetLeft - editor.scrollLeft;
+            
+            document.body.removeChild(mirror);
+            return { top, left };
+        };
+
+        const renderAutocomplete = () => {
+            if (state.filteredSnippets.length === 0) {
+                popup.classList.add('hidden');
+                return;
+            }
+
+            popup.innerHTML = state.filteredSnippets.map((s, idx) => `
+                <div class="snippet-item px-4 py-2 cursor-pointer border-b border-gray-700 last:border-0 flex flex-col ${idx === state.autocompleteIndex ? 'active-item' : 'hover:bg-gray-700 text-gray-400'}" data-index="${idx}">
+                    <span class="font-bold text-gray-200">:${s.name}</span>
+                    <span class="text-xs truncate opacity-70">${s.code.split('\n')[0]}</span>
+                </div>
+            `).join('');
+
+            const coords = getCaretCoordinates();
+            const paddingX = parseInt(window.getComputedStyle(editor).paddingLeft);
+            const paddingY = parseInt(window.getComputedStyle(editor).paddingTop);
+            
+            popup.style.left = `${coords.left + paddingX}px`;
+            popup.style.top = `${coords.top + paddingY + 24}px`; 
+            popup.classList.remove('hidden');
+
+            document.querySelectorAll('.snippet-item').forEach(item => {
+                item.addEventListener('mousedown', (e) => {
+                    e.preventDefault(); 
+                    state.autocompleteIndex = parseInt(item.dataset.index);
+                    insertSnippet();
+                });
+            });
+        };
+
+        const closeAutocomplete = () => {
+            state.autocompleteActive = false;
+            popup.classList.add('hidden');
+        };
+
+        const insertSnippet = () => {
+            if (!state.autocompleteActive || state.filteredSnippets.length === 0) return;
+            
+            const snippet = state.filteredSnippets[state.autocompleteIndex];
+            const codeBefore = editor.value.substring(0, editor.selectionStart);
+            const codeAfter = editor.value.substring(editor.selectionStart);
+            
+            const lastNewline = codeBefore.lastIndexOf('\n');
+            const currentLineStart = lastNewline === -1 ? 0 : lastNewline + 1;
+            
+            const currentLine = codeBefore.substring(currentLineStart);
+            const match = currentLine.match(/^(\s*):/);
+            const indent = match ? match[1] : '';
+
+            const indentedSnippetLines = snippet.code.split('\n').map((l, i) => i === 0 ? l : indent + l);
+            const finalSnippetCode = indentedSnippetLines.join('\n');
+
+            const beforeTrigger = codeBefore.substring(0, codeBefore.length - (currentLine.length - indent.length)); 
+            
+            editor.value = beforeTrigger + finalSnippetCode + codeAfter;
+            
+            const newPos = beforeTrigger.length + finalSnippetCode.length;
+            editor.selectionStart = editor.selectionEnd = newPos;
+
+            closeAutocomplete();
+            parseCode();
+        };
+
+        // --- STREAMING_CHUNK:Attaching event listeners... ---
+        // Event Listeners
+        editor.addEventListener('input', () => {
+            parseCode();
+
+            const pos = editor.selectionStart;
+            const textBeforeCursor = editor.value.substring(0, pos);
+            const lines = textBeforeCursor.split('\n');
+            const currentLine = lines[lines.length - 1];
+
+            const match = currentLine.match(/^\s*:([a-zA-Z0-9_]*)$/);
+
+            if (match) {
+                state.autocompleteActive = true;
+                state.autocompleteFilter = match[1].toLowerCase();
+                
+                state.filteredSnippets = state.snippets.filter(s => 
+                    s.name.toLowerCase().startsWith(state.autocompleteFilter)
+                );
+                
+                state.autocompleteIndex = 0;
+                renderAutocomplete();
+            } else {
+                closeAutocomplete();
+            }
+        });
+
+        editor.addEventListener('keydown', (e) => {
+            // Enable standard Tab key support to insert a literal \t tab character
+            if (e.key === 'Tab' && !state.autocompleteActive) {
+                e.preventDefault();
+                const start = editor.selectionStart;
+                const end = editor.selectionEnd;
+                editor.value = editor.value.substring(0, start) + "\t" + editor.value.substring(end);
+                editor.selectionStart = editor.selectionEnd = start + 1;
+                parseCode();
+                return;
+            }
+
+            if (!state.autocompleteActive) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                state.autocompleteIndex = (state.autocompleteIndex + 1) % state.filteredSnippets.length;
+                renderAutocomplete();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                state.autocompleteIndex = (state.autocompleteIndex - 1 + state.filteredSnippets.length) % state.filteredSnippets.length;
+                renderAutocomplete();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                insertSnippet();
+            } else if (e.key === 'Escape' || e.key === ' ') {
+                closeAutocomplete();
+            }
+        });
+
+        // Bootstrap App
+        window.onload = () => {
+            initDB();
+            parseCode(); 
+        };
+
+    </script>
+</body>
+</html>

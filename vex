@@ -1,0 +1,436 @@
+#!/usr/bin/env python3
+import sys
+import re
+import time
+import os
+import json
+
+class VexInput:
+    def __call__(self, prompt=""):
+        return input(prompt)
+    
+    def number(self, prompt=""):
+        while True:
+            v = input(prompt)
+            try:
+                return float(v)
+            except ValueError:
+                pass
+
+class DefaultEnv(dict):
+    def __missing__(self, key):
+        return 0  # Vex defaults uninitialized variables to 0
+
+# System-wide directory for environment profiles
+ENV_DIR = os.path.expanduser("~/.vex_environments")
+os.makedirs(ENV_DIR, exist_ok=True)
+
+def ensure_default_main_env():
+    """Ensures that the default 'main' environment profile exists on the system."""
+    main_path = os.path.join(ENV_DIR, "main.json")
+    if not os.path.exists(main_path):
+        try:
+            default_profile = {
+                "name": "main",
+                "max_mem_usage": None,
+                "max_cpu_usage": None,
+                "blocked_statements": ""
+            }
+            with open(main_path, 'w', encoding='utf-8') as f:
+                json.dump(default_profile, f, indent=4)
+        except Exception:
+            pass
+
+def strip_comments_and_normalize(line):
+    # Normalize smart quotes to standard quotes
+    line = line.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+    in_string = False
+    for i, char in enumerate(line):
+        if char == '"' or char == "'":
+            in_string = not in_string
+        elif char == '#' and not in_string:
+            return line[:i].rstrip()
+    return line.rstrip()
+
+def preprocess_code(code):
+    lines = code.split('\n')
+    out_lines = []
+    buffer = ""
+    in_parens = 0
+    
+    for raw_line in lines:
+        line = strip_comments_and_normalize(raw_line)
+        if not line.strip() and not buffer:
+            continue
+            
+        # Count parenthesis outside of strings for encased value expansion
+        in_str = False
+        for char in line:
+            if char == '"' or char == "'":
+                in_str = not in_str
+            if not in_str:
+                if char == '(': in_parens += 1
+                elif char == ')': in_parens -= 1
+        
+        # Build line block
+        if buffer:
+            buffer += " " + line.strip()
+        else:
+            buffer = line
+            
+        if in_parens <= 0:
+            out_lines.append(buffer)
+            buffer = ""
+            in_parens = 0
+            
+    return out_lines
+
+def parse_blocks(lines):
+    root = []
+    stack = [(-1, root)]
+    
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped:
+            continue
+            
+        indent = len(line) - len(stripped)
+        
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+            
+        new_node = {'line': stripped, 'children': []}
+        stack[-1][1].append(new_node)
+        stack.append((indent, new_node['children']))
+        
+    return root
+
+RESERVED_KEYWORDS = {
+    "globalvar", "localvar", "function", "dofunc", "if", "else", "until", 
+    "while", "repeat", "addlib", "try", "catch", "exitloop", "wait", 
+    "warn", "critical", "exit", "env"
+}
+
+def is_blocked(line, blocked_list):
+    """Checks if the command is in the environment's blocked list."""
+    for blocked in blocked_list:
+        pattern = r'^\s*\b' + re.escape(blocked) + r'\b'
+        if re.search(pattern, line):
+            return True
+    return False
+
+def pre_run_checks(nodes, state):
+    for node in nodes:
+        line = node['line']
+        children = node['children']
+        
+        # Check against blocked statements
+        if is_blocked(line, state.get('blocked_statements', [])):
+            print(f"Environment Security Error: The command starting with '{line.split()[0]}' is blocked in the '{state['active_env']}' environment.", file=sys.stderr)
+            sys.exit(1)
+        
+        # Check variable declarations for pure numbers or keywords
+        var_match = re.match(r'^(?:globalvar|localvar)\s+([^=+\-*/%^\$\s]+)', line)
+        if var_match:
+            name = var_match.group(1)
+            if name.isdigit():
+                print(f"Syntax Error: Variable name '{name}' cannot consist only of numbers in '{line}'", file=sys.stderr)
+                sys.exit(1)
+            if name in RESERVED_KEYWORDS:
+                print(f"Syntax Error: Cannot use reserved keyword '{name}' as a variable name in '{line}'", file=sys.stderr)
+                sys.exit(1)
+                
+        # Check function declarations for pure numbers or keywords
+        func_match = re.match(r'^function\s+([^\s]+)', line)
+        if func_match:
+            name = func_match.group(1)
+            if name.isdigit():
+                print(f"Syntax Error: Function name '{name}' cannot consist only of numbers in '{line}'", file=sys.stderr)
+                sys.exit(1)
+            if name in RESERVED_KEYWORDS:
+                print(f"Syntax Error: Cannot use reserved keyword '{name}' as a function name in '{line}'", file=sys.stderr)
+                sys.exit(1)
+                
+        # Recursively check children blocks
+        if children:
+            pre_run_checks(children, state)
+
+def evaluate(expr, local_vars, global_vars):
+    # Convert Vex '=' comparison to Python '==' where appropriate
+    expr = re.sub(r'(?<![<>!=])=(?![=])', '==', expr)
+    
+    # Strip event placeholders (just default to False for CLI support)
+    expr = re.sub(r'event:[\w\-.]+', 'False', expr)
+    
+    env = DefaultEnv()
+    env.update(global_vars)
+    env.update(local_vars)
+    env['input'] = VexInput()
+    
+    # Ensure standard True/False mappings
+    expr = expr.replace('true', 'True').replace('false', 'False')
+
+    try:
+        val = eval(expr, {"__builtins__": {}}, env)
+        return val
+    except Exception as e:
+        return 0
+
+def apply_environment(env_name, state, explicit=False):
+    """Applies environment profile resource restrictions and blocks statements."""
+    filepath = os.path.join(ENV_DIR, f"{env_name}.json")
+    state['active_env'] = env_name
+    
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                profile = json.load(f)
+            
+            # 1. Parse Blocked Statements
+            blocked_raw = profile.get('blocked_statements', '')
+            state['blocked_statements'] = [s.strip() for s in blocked_raw.split(',') if s.strip()]
+            
+            # 2. Limit RAM Usage (MAX-MEM-USAGE)
+            max_mem = profile.get('max_mem_usage')
+            if max_mem:
+                try:
+                    import resource
+                    limit_bytes = int(max_mem) * 1024 * 1024
+                    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+                except Exception:
+                    pass  # Graceful fallback if platform or permissions restrict rlimit
+                    
+            # 3. Limit CPU Priority Niceness (MAX-CPU-USAGE)
+            max_cpu = profile.get('max_cpu_usage')
+            if max_cpu:
+                try:
+                    cpu_percent = int(max_cpu)
+                    if cpu_percent < 100:
+                        # Map 100% CPU limit down to Linux process nice level (up to nice level 19)
+                        nice_val = int((100 - cpu_percent) * 19 / 100)
+                        os.nice(nice_val)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Warning: Failed to load environment profile '{env_name}': {e}", file=sys.stderr)
+    else:
+        if explicit:
+            print(f"Environment Error: The specified environment profile '{env_name}' does not exist on this system.", file=sys.stderr)
+            sys.exit(1)
+        # If implicitly/automatically called at start and doesn't exist, reset to empty limits but keep active_env name
+        state['blocked_statements'] = []
+
+def run_ast(nodes, local_vars, global_vars, functions, state):
+    last_if_result = False
+    last_try_failed = False
+    
+    for node in nodes:
+        line = node['line']
+        children = node['children']
+        
+        # Runtime safeguard check for dynamically bypassed or loaded statements
+        if is_blocked(line, state.get('blocked_statements', [])):
+            print(f"Environment Security Error: '{line.split()[0]}' is restricted.", file=sys.stderr)
+            sys.exit(1)
+            
+        if line.startswith('addlib '):
+            continue  # Ignored in lightweight CLI implementation
+            
+        elif line.startswith('env '):
+            env_name = line[4:].strip().strip('"\'')
+            apply_environment(env_name, state, explicit=True)
+            
+        elif line.startswith('print('):
+            args_str = line[line.find('(')+1 : line.rfind(')')]
+            val = evaluate(f"({args_str},)", local_vars, global_vars)
+            if isinstance(val, tuple):
+                out = "".join(str(x) for x in val).replace('\\n', '\n').replace('\\t', '\t')
+                print(out)
+                
+        elif line.startswith('globalvar ') or line.startswith('localvar '):
+            match = re.match(r'(globalvar|localvar)\s+([a-zA-Z_]\w*)\s*([=+\-*/%^\$])\s*(.*)', line)
+            if match:
+                vtype, name, op, expr = match.groups()
+                target_env = global_vars if vtype == 'globalvar' else local_vars
+                
+                if op == '$':
+                    target_env[name] = not target_env.get(name, False)
+                else:
+                    val = evaluate(expr, local_vars, global_vars)
+                    curr = target_env.get(name, 0)
+                    if op == '=': target_env[name] = val
+                    elif op == '+': target_env[name] = curr + val
+                    elif op == '-': target_env[name] = curr - val
+                    elif op == '*': target_env[name] = curr * val
+                    elif op == '/': target_env[name] = curr / val
+                    elif op == '%': target_env[name] = curr % val
+            else:
+                print(f"Syntax Error: Invalid variable assignment syntax: '{line}'", file=sys.stderr)
+                sys.exit(1)
+                    
+        elif line.startswith('if '):
+            cond_str = line[line.find('(')+1 : line.rfind(')')]
+            last_if_result = bool(evaluate(cond_str, local_vars, global_vars))
+            if last_if_result:
+                res = run_ast(children, local_vars, global_vars, functions, state)
+                if res == 'exitloop': return res
+                elif res: return res
+                
+        elif line == 'else':
+            if not last_if_result:
+                res = run_ast(children, local_vars, global_vars, functions, state)
+                if res == 'exitloop': return res
+                elif res: return res
+                
+        elif line.startswith('until '):
+            cond_str = line[line.find('(')+1 : line.rfind(')')]
+            while not evaluate(cond_str, local_vars, global_vars):
+                res = run_ast(children, local_vars, global_vars, functions, state)
+                if res == 'exitloop': break
+                if res: return res
+                
+        elif line.startswith('while '):
+            cond_str = line[line.find('(')+1 : line.rfind(')')]
+            while evaluate(cond_str, local_vars, global_vars):
+                res = run_ast(children, local_vars, global_vars, functions, state)
+                if res == 'exitloop': break
+                if res: return res
+                
+        elif line.startswith('repeat '):
+            cond_str = line[line.find('(')+1 : line.rfind(')')]
+            times = int(evaluate(cond_str, local_vars, global_vars))
+            for _ in range(times):
+                res = run_ast(children, local_vars, global_vars, functions, state)
+                if res == 'exitloop': break
+                if res: return res
+                
+        elif line.startswith('function '):
+            name = line.split(' ', 1)[1].strip()
+            functions[name] = children
+            
+        elif line.startswith('dofunc '):
+            func_name = line[7:line.find('(')].strip()
+            args_str = line[line.find('(')+1 : line.rfind(')')]
+            kwargs = evaluate(f"dict({args_str})" if args_str.strip() else "dict()", local_vars, global_vars)
+            
+            if func_name in functions:
+                res = run_ast(functions[func_name], kwargs, global_vars, functions, state)
+                if res == 'exitloop':
+                    return res
+                
+        elif line == 'try':
+            last_try_failed = False
+            try:
+                res = run_ast(children, local_vars, global_vars, functions, state)
+                if res == 'exitloop': return res
+                elif res: return res
+            except Exception:
+                last_try_failed = True
+                
+        elif line == 'catch':
+            if last_try_failed:
+                res = run_ast(children, local_vars, global_vars, functions, state)
+                if res == 'exitloop': return res
+                elif res: return res
+                
+        elif line.startswith('wait '):
+            sec = evaluate(line[5:], local_vars, global_vars)
+            time.sleep(float(sec))
+            
+        elif line.startswith('warn('):
+            msg = line[line.find('(')+1 : line.rfind(')')]
+            val = evaluate(f"({msg},)", local_vars, global_vars)
+            if isinstance(val, tuple): val = "".join(str(x) for x in val)
+            print(f"WARNING: {val}", file=sys.stderr)
+            
+        elif line.startswith('critical('):
+            msg = line[line.find('(')+1 : line.rfind(')')]
+            val = evaluate(f"({msg},)", local_vars, global_vars)
+            if isinstance(val, tuple): val = "".join(str(x) for x in val)
+            print(f"CRITICAL: {val}", file=sys.stderr)
+            sys.exit(1)
+            
+        elif line == 'exit':
+            sys.exit(0) # Program ends completely on exit command
+            
+        elif line == 'exitloop':
+            return 'exitloop'
+            
+        else:
+            print(f"Syntax Error: Unrecognized command or invalid syntax: '{line}'", file=sys.stderr)
+            sys.exit(1)
+
+def run_environment_tui():
+    """Interactive TUI prompts to configure environment profiles."""
+    print("Ready to create an environment. Please enter the environment’s variables below:\n")
+    name = input("NAME > ").strip()
+    if not name:
+        print("Error: Environment name cannot be empty.", file=sys.stderr)
+        sys.exit(1)
+        
+    mem = input("MAX-MEM-USAGE (MB) > ").strip()
+    cpu = input("MAX-CPU-USAGE (%) > ").strip()
+    blocked = input("BLOCKED-STATEMENTS (comma-separated) > ").strip()
+    
+    profile = {
+        "name": name,
+        "max_mem_usage": int(mem) if mem.isdigit() else None,
+        "max_cpu_usage": int(cpu) if cpu.isdigit() else None,
+        "blocked_statements": blocked
+    }
+    
+    filepath = os.path.join(ENV_DIR, f"{name}.json")
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(profile, f, indent=4)
+        print(f"\nEnvironment creation is complete. You can now use “{name}” across Vex programs on your system.")
+    except Exception as e:
+        print(f"Error: Failed to write environment configuration: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: vex <file.vex> OR vex env create OR vex create")
+        sys.exit(1)
+        
+    # Check for Environment TUI Activation Command
+    first_arg = sys.argv[1]
+    is_env_creation = (first_arg == "create") or (first_arg == "env" and len(sys.argv) >= 3 and sys.argv[2] == "create")
+    
+    if is_env_creation:
+        run_environment_tui()
+        sys.exit(0)
+        
+    filepath = sys.argv[1]
+    if not os.path.exists(filepath):
+        print(f"Error: File '{filepath}' not found.")
+        sys.exit(1)
+        
+    with open(filepath, 'r', encoding='utf-8') as f:
+        code = f.read()
+        
+    lines = preprocess_code(code)
+    ast = parse_blocks(lines)
+    
+    # State containing environment variables & profiles
+    state = {
+        'active_env': 'main',
+        'blocked_statements': []
+    }
+    
+    # Ensure that a system 'main' profile configuration exists
+    ensure_default_main_env()
+    
+    # Apply standard default 'main' environment at start of execution
+    apply_environment('main', state, explicit=False)
+    
+    # Run our static checks before beginning execution
+    pre_run_checks(ast, state)
+    
+    global_vars = {}
+    functions = {}
+    
+    run_ast(ast, {}, global_vars, functions, state)
+
+if __name__ == "__main__":
+    main()
