@@ -7,62 +7,51 @@ import json
 import tkinter as tk
 from tkinter import ttk
 
-# Configuration for IPC
 HOST = '127.0.0.1'
 PORT = 65432
 
 def start_gui_daemon():
-    """Starts the persistent Tkinter window process in the background."""
     root = tk.Tk()
     root.title("Vex Window Daemon")
     root.geometry("400x300")
     
-    # Storage for dynamically created widgets
     widgets = {}
     
+    def process_command(cmd):
+        """Executes Tkinter operations safely on the main thread."""
+        action = cmd.get("action")
+        w_id = cmd.get("id")
+        
+        if action == "title":
+            root.title(cmd["text"])
+        elif action == "geometry":
+            root.geometry(cmd["size"])
+        elif action == "create_label":
+            lbl = ttk.Label(root, text=cmd["text"])
+            lbl.pack(pady=5)
+            widgets[w_id] = lbl
+        elif action == "create_button":
+            btn = ttk.Button(root, text=cmd["text"])
+            btn.pack(pady=5)
+            widgets[w_id] = btn
+        elif action == "update_text":
+            if w_id in widgets:
+                widgets[w_id].config(text=cmd["text"])
+                root.update_idletasks()  # Forces Tkinter to redraw the visual text immediately
+        elif action == "close":
+            root.destroy()
+
     def handle_client(conn):
         with conn:
             try:
-                data = conn.recv(1024).decode('utf-8')
+                data = conn.recv(4096).decode('utf-8')
                 if not data:
                     return
-                
                 cmd = json.loads(data)
-                action = cmd.get("action")
-                w_id = cmd.get("id")
                 
-                # Execute Tkinter operations safely on the main thread via root.after
-                if action == "title":
-                    root.after(0, lambda: root.title(cmd["text"]))
-                    conn.sendall(b"OK")
-                elif action == "geometry":
-                    root.after(0, lambda: root.geometry(cmd["size"]))
-                    conn.sendall(b"OK")
-                elif action == "create_button":
-                    def make_btn():
-                        btn = ttk.Button(root, text=cmd["text"])
-                        btn.pack(pady=5)
-                        widgets[w_id] = btn
-                    root.after(0, make_btn)
-                    conn.sendall(b"OK")
-                elif action == "create_label":
-                    def make_lbl():
-                        lbl = ttk.Label(root, text=cmd["text"])
-                        lbl.pack(pady=5)
-                        widgets[w_id] = lbl
-                    root.after(0, make_lbl)
-                    conn.sendall(b"OK")
-                elif action == "update_text":
-                    def upd_txt():
-                        if w_id in widgets:
-                            widgets[w_id].config(text=cmd["text"])
-                    root.after(0, upd_txt)
-                    conn.sendall(b"OK")
-                elif action == "close":
-                    root.after(0, root.destroy)
-                    conn.sendall(b"OK")
-                else:
-                    conn.sendall(b"UNKNOWN_ACTION")
+                # Push the command safely to Tkinter's main loop thread
+                root.after(0, lambda: process_command(cmd))
+                conn.sendall(b"OK")
             except Exception as e:
                 conn.sendall(f"ERROR: {str(e)}".encode('utf-8'))
 
@@ -78,12 +67,10 @@ def start_gui_daemon():
                 except:
                     break
 
-    # Run the socket listener in a background thread so Tkinter mainloop can run
     threading.Thread(target=socket_server, daemon=True).start()
     root.mainloop()
 
 def send_command(command_dict):
-    """Sends a command packet to the running GUI daemon."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((HOST, PORT))
@@ -92,72 +79,68 @@ def send_command(command_dict):
     except ConnectionRefusedError:
         return "DAEMON_NOT_RUNNING"
 
+def extract_arg(args, key):
+    """Safely extracts arguments even if they contain spaces."""
+    for arg in args:
+        if arg.startswith(f"{key}="):
+            return arg.split("=", 1)[1].strip('"')
+    # Fallback to reconstructing if spaces split the arguments
+    full_str = " ".join(args)
+    if f"{key}=" in full_str:
+        try:
+            target = full_str.split(f"{key}=")[1]
+            if target.startswith('"'):
+                return target.split('"')[1]
+            return target.split(" ")[0]
+        except:
+            pass
+    return ""
+
 def main():
     args = sys.argv[1:]
-    
     if not args:
-        print("Error: No opcode provided.", file=sys.stderr)
         sys.exit(1)
         
     opcode = args[0]
     
-    # Syntax: windowd init
     if opcode == "init":
-        # Check if daemon is already up
         status = send_command({"action": "ping"})
         if status == "DAEMON_NOT_RUNNING":
-            # Fork a detached background daemon process
             pid = os.fork()
-            if pid == 0:  # Child process
+            if pid == 0:
                 os.setsid()
                 start_gui_daemon()
                 sys.exit(0)
             else:
-                print("Window environment initialized.")
+                print("SUCCESS")
         else:
-            print("Window environment already running.")
+            print("ALREADY_RUNNING")
             
-    # Syntax: windowd title text="My App"
     elif opcode == "title":
-        text = args[1].split("=")[1].strip('"') if len(args) > 1 else "Vex App"
-        res = send_command({"action": "title", "text": text})
-        print(res)
+        text = extract_arg(args, "text")
+        print(send_command({"action": "title", "text": text}))
 
-    # Syntax: windowd geometry size="500x400"
     elif opcode == "geometry":
-        size = args[1].split("=")[1].strip('"') if len(args) > 1 else "400x300"
-        res = send_command({"action": "geometry", "size": size})
-        print(res)
+        size = extract_arg(args, "size")
+        print(send_command({"action": "geometry", "size": size}))
 
-    # Syntax: windowd label id="lbl1" text="Hello Vex"
     elif opcode == "label":
-        w_id = args[1].split("=")[1].strip('"')
-        text = args[2].split("=")[1].strip('"')
-        res = send_command({"action": "create_label", "id": w_id, "text": text})
-        print(res)
+        w_id = extract_arg(args, "id")
+        text = extract_arg(args, "text")
+        print(send_command({"action": "create_label", "id": w_id, "text": text}))
 
-    # Syntax: windowd button id="btn1" text="Click Me"
     elif opcode == "button":
-        w_id = args[1].split("=")[1].strip('"')
-        text = args[2].split("=")[1].strip('"')
-        res = send_command({"action": "create_button", "id": w_id, "text": text})
-        print(res)
+        w_id = extract_arg(args, "id")
+        text = extract_arg(args, "text")
+        print(send_command({"action": "create_button", "id": w_id, "text": text}))
 
-    # Syntax: windowd update id="lbl1" text="New Text"
     elif opcode == "update":
-        w_id = args[1].split("=")[1].strip('"')
-        text = args[2].split("=")[1].strip('"')
-        res = send_command({"action": "update_text", "id": w_id, "text": text})
-        print(res)
+        w_id = extract_arg(args, "id")
+        text = extract_arg(args, "text")
+        print(send_command({"action": "update_text", "id": w_id, "text": text}))
 
-    # Syntax: windowd close
     elif opcode == "close":
-        res = send_command({"action": "close"})
-        print(res)
-
-    else:
-        print(f"Error: Unknown opcode '{opcode}'", file=sys.stderr)
-        sys.exit(1)
+        print(send_command({"action": "close"}))
 
 if __name__ == "__main__":
     main()
