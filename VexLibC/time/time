@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+import sys
+import datetime
+import time
+
+def main():
+    # Vex passes arguments separated by spaces: [path, opcode, opcode/sub-opcode, ...variables]
+    # Example: ./time runtimer start
+    args = sys.argv[1:]
+    
+    if not args:
+        print("Error: No opcode provided.", file=sys.stderr)
+        sys.exit(1)
+        
+    primary_opcode = args[0]
+    
+    # Feature 1: Report current hour, minute, and second
+    if primary_opcode == "hms":
+        now = datetime.datetime.now()
+        # Returns the output to be passed back to the Vex variable
+        print(f"{now.hour}:{now.minute:02d}:{now.second:02d}")
+        
+    # Feature 2: Report current day, month, and year
+    elif primary_opcode == "dmy":
+        now = datetime.datetime.now()
+        print(f"{now.day:02d}-{now.month:02d}-{now.year}")
+        
+    # Feature 3: Report current JS timestamp (milliseconds)
+    elif primary_opcode == "timestamp":
+        js_timestamp = int(time.time() * 1000)
+        print(js_timestamp)
+        
+    # Feature 4: Runtime timers
+    elif primary_opcode == "runtimer":
+        if len(args) < 2:
+            print("Error: Missing sub-opcode for runtimer.", file=sys.stderr)
+            sys.exit(1)
+            
+        sub_opcode = args[1]
+        
+        if sub_opcode == "start":
+            # In a live Vex environment, this takes control of the terminal execution 
+            # or tracks continuous runtime. Here it starts a standard second counter.
+            start_time = time.time()
+            try:
+                while True:
+                    elapsed = int(time.time() - start_time)
+                    # Yields/prints the continuous second count to the terminal
+                    print(f"Elapsed: {elapsed}s", end="\r")
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+                
+        elif sub_opcode == "second":
+            # Captures a single runtime seconds delta variable logic if passed
+            # e.g., if checking an active variable state
+            print("0") # Default base return for initialized variable state
+            
+    else:
+        print(f"Error: Unknown opcode '{primary_opcode}'", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
