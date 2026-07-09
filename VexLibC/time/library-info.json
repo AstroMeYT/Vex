@@ -1,5 +1,6 @@
 {
-  "library-name": "time"
-  "supported-systems": "debian, redhat"
-  "author": "Vex"
+  "library-name": "time",
+  "supported-systems": "debian, redhat",
+  "author": "Vex",
+  "description": "A simple time extension for getting formatted time results in HMS and DMY formats."
 }
