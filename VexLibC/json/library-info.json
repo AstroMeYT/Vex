@@ -1,5 +1,6 @@
 {
   "library-name": "json"
   "supported-systems": "debian, redhat"
-  "author": "Vex"
+  "author": "Vex",
+  "description" "A tool for creating, editing, and reading JSON strings using setkey and getkey."
 }
