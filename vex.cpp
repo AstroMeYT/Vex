@@ -20,7 +20,7 @@
 #include <sys/select.h>
 #include <sys/time.h>
 
-// ==========================================
+// ==========================================================
 // Value Representation System
 // ==========================================
 enum class ValueType { NUMBER, STRING, BOOLEAN, NONE };
@@ -78,10 +78,13 @@ struct Value {
     }
 };
 
+// Global variables mappings
 typedef std::unordered_map<std::string, Value> Scope;
 
+// AST Nodes
 struct ASTNode {
     std::string line;
+    int line_num;
     std::vector<std::shared_ptr<ASTNode>> children;
 };
 
@@ -91,18 +94,39 @@ struct ExecutionState {
     std::unordered_map<std::string, std::string> libraries; 
 };
 
-Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, ExecutionState& state);
+struct SourceLine {
+    std::string text;
+    int line_num;
+};
+
+// Global Error Helper
+void throw_error(const std::string& msg, int line_num, int char_pos = -1) {
+    std::ostringstream oss;
+    oss << "[Line " << line_num << "]";
+    if (char_pos != -1) {
+        oss << " [Character " << char_pos << "]";
+    }
+    oss << " " << msg;
+    throw std::runtime_error(oss.str());
+}
+
+Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, ExecutionState& state, int line_num);
 
 // ==========================================
 // Expression Tokenizer & Parser
 // ==========================================
 enum class TokenType {
-    NUMBER, STRING, IDENTIFIER, PLUS, MINUS, MULTIPLY, DIVIDE, MODULO,
+    NUMBER, STRING, IDENTIFIER,
+    PLUS, MINUS, MULTIPLY, DIVIDE, MODULO,
     EQUAL, LESS, GREATER, LESSEQUAL, GREATEREQUAL, LPAREN, RPAREN, COMMA, DOT,
     AND, OR, NOT, TRUE_LIT, FALSE_LIT, END
 };
 
-struct Token { TokenType type; std::string text; };
+struct Token { 
+    TokenType type; 
+    std::string text; 
+    int char_pos; 
+};
 
 class Lexer {
     std::string src; size_t pos = 0;
@@ -115,59 +139,68 @@ public:
     std::vector<Token> tokenize() {
         std::vector<Token> tokens;
         while (pos < src.size()) {
+            size_t token_start = pos;
             char c = peek();
             if (std::isspace(c)) { advance(); continue; }
             if (c == '.') {
                 if (std::isdigit(src[pos + 1])) {
-                    std::string num = ""; while (std::isdigit(peek()) || peek() == '.') num += advance();
-                    tokens.push_back({TokenType::NUMBER, num});
-                } else { advance(); tokens.push_back({TokenType::DOT, "."}); }
+                    std::string num = ""; while (std::isdigit(peek()) || peek() == '.') {
+                        num += advance();
+                    }
+                    tokens.push_back({TokenType::NUMBER, num, (int)token_start + 1});
+                } else { advance(); tokens.push_back({TokenType::DOT, ".", (int)token_start + 1}); }
                 continue;
             }
             if (std::isdigit(c)) {
-                std::string num = ""; while (std::isdigit(peek()) || peek() == '.') num += advance();
-                tokens.push_back({TokenType::NUMBER, num}); continue;
+                std::string num = ""; while (std::isdigit(peek()) || peek() == '.') {
+                    num += advance();
+                }
+                tokens.push_back({TokenType::NUMBER, num, (int)token_start + 1}); continue;
             }
             if (c == '"' || c == '\'') {
                 char quote = advance(); std::string str = "";
-                while (peek() != '\0' && peek() != quote) str += advance();
+                while (peek() != '\0' && peek() != quote) {
+                    str += advance();
+                }
                 if (peek() == quote) advance();
-                tokens.push_back({TokenType::STRING, str}); continue;
+                tokens.push_back({TokenType::STRING, str, (int)token_start + 1}); continue;
             }
             if (std::isalpha(c) || c == '_') {
-                std::string id = ""; while (std::isalnum(peek()) || peek() == '_') id += advance();
-                if (id == "and") tokens.push_back({TokenType::AND, id});
-                else if (id == "or") tokens.push_back({TokenType::OR, id});
-                else if (id == "not") tokens.push_back({TokenType::NOT, id});
-                else if (id == "True" || id == "true") tokens.push_back({TokenType::TRUE_LIT, "True"});
-                else if (id == "False" || id == "false") tokens.push_back({TokenType::FALSE_LIT, "False"});
-                else tokens.push_back({TokenType::IDENTIFIER, id});
+                std::string id = ""; while (std::isalnum(peek()) || peek() == '_') {
+                    id += advance();
+                }
+                if (id == "and") tokens.push_back({TokenType::AND, id, (int)token_start + 1});
+                else if (id == "or") tokens.push_back({TokenType::OR, id, (int)token_start + 1});
+                else if (id == "not") tokens.push_back({TokenType::NOT, id, (int)token_start + 1});
+                else if (id == "True" || id == "true") tokens.push_back({TokenType::TRUE_LIT, "True", (int)token_start + 1});
+                else if (id == "False" || id == "false") tokens.push_back({TokenType::FALSE_LIT, "False", (int)token_start + 1});
+                else tokens.push_back({TokenType::IDENTIFIER, id, (int)token_start + 1});
                 continue;
             }
             if (c == '=') {
-                advance(); if (peek() == '=') { advance(); tokens.push_back({TokenType::EQUAL, "=="}); }
-                else tokens.push_back({TokenType::EQUAL, "="});
+                advance(); if (peek() == '=') { advance(); tokens.push_back({TokenType::EQUAL, "==", (int)token_start + 1}); }
+                else tokens.push_back({TokenType::EQUAL, "=", (int)token_start + 1});
                 continue;
             }
             if (c == '<') {
-                advance(); if (peek() == '=') { advance(); tokens.push_back({TokenType::LESSEQUAL, "<="}); }
-                else tokens.push_back({TokenType::LESS, "<"}); continue;
+                advance(); if (peek() == '=') { advance(); tokens.push_back({TokenType::LESSEQUAL, "<=", (int)token_start + 1}); }
+                else tokens.push_back({TokenType::LESS, "<", (int)token_start + 1}); continue;
             }
             if (c == '>') {
-                advance(); if (peek() == '=') { advance(); tokens.push_back({TokenType::GREATEREQUAL, ">="}); }
-                else tokens.push_back({TokenType::GREATER, ">"}); continue;
+                advance(); if (peek() == '=') { advance(); tokens.push_back({TokenType::GREATEREQUAL, ">=", (int)token_start + 1}); }
+                else tokens.push_back({TokenType::GREATER, ">", (int)token_start + 1}); continue;
             }
-            if (c == '+') { advance(); tokens.push_back({TokenType::PLUS, "+"}); continue; }
-            if (c == '-') { advance(); tokens.push_back({TokenType::MINUS, "-"}); continue; }
-            if (c == '*') { advance(); tokens.push_back({TokenType::MULTIPLY, "*"}); continue; }
-            if (c == '/') { advance(); tokens.push_back({TokenType::DIVIDE, "/"}); continue; }
-            if (c == '%') { advance(); tokens.push_back({TokenType::MODULO, "%"}); continue; }
-            if (c == '(') { advance(); tokens.push_back({TokenType::LPAREN, "("}); continue; }
-            if (c == ')') { advance(); tokens.push_back({TokenType::RPAREN, ")"}); continue; }
-            if (c == ',') { advance(); tokens.push_back({TokenType::COMMA, ","}); continue; }
+            if (c == '+') { advance(); tokens.push_back({TokenType::PLUS, "+", (int)token_start + 1}); continue; }
+            if (c == '-') { advance(); tokens.push_back({TokenType::MINUS, "-", (int)token_start + 1}); continue; }
+            if (c == '*') { advance(); tokens.push_back({TokenType::MULTIPLY, "*", (int)token_start + 1}); continue; }
+            if (c == '/') { advance(); tokens.push_back({TokenType::DIVIDE, "/", (int)token_start + 1}); continue; }
+            if (c == '%') { advance(); tokens.push_back({TokenType::MODULO, "%", (int)token_start + 1}); continue; }
+            if (c == '(') { advance(); tokens.push_back({TokenType::LPAREN, "(", (int)token_start + 1}); continue; }
+            if (c == ')') { advance(); tokens.push_back({TokenType::RPAREN, ")", (int)token_start + 1}); continue; }
+            if (c == ',') { advance(); tokens.push_back({TokenType::COMMA, ",", (int)token_start + 1}); continue; }
             advance(); 
         }
-        tokens.push_back({TokenType::END, ""});
+        tokens.push_back({TokenType::END, "", (int)pos + 1});
         return tokens;
     }
 };
@@ -175,9 +208,15 @@ public:
 class Parser {
     std::vector<Token> tokens; size_t index = 0;
     Scope& local_scope; Scope& global_scope; ExecutionState& state;
+    int line_num;
 
+public:
     Token peek() { return tokens[index]; }
     Token advance() { return tokens[index++]; }
+
+    void raise_error(const std::string& msg, const Token& t) {
+        throw_error(msg, line_num, t.char_pos);
+    }
 
     Value lookup_var(const std::string& name) {
         if (local_scope.count(name)) return local_scope[name];
@@ -213,7 +252,7 @@ class Parser {
                                     if (idx == trimmed.size()) return Value(num);
                                 }
                             } catch (...) {}
-                            throw std::runtime_error("Invalid numeric input to input.number()");
+                            raise_error("Invalid numeric input to input.number()", t);
                         }
                     }
                 } else if (peek().type == TokenType::LPAREN) {
@@ -249,7 +288,7 @@ class Parser {
                 while (peek().type == TokenType::DOT) {
                     advance(); Token member = peek();
                     if (member.type == TokenType::IDENTIFIER) { opcodes.push_back(member.text); advance(); } 
-                    else throw std::runtime_error("Expected identifier after '.' in library call");
+                    else raise_error("Expected identifier after '.' in library call", member);
                 }
                 
                 if (peek().type == TokenType::LPAREN) {
@@ -262,9 +301,19 @@ class Parser {
                                 arg_key = peek().text; advance(); advance(); 
                             }
                         }
+                        
                         Value arg_val = expression();
-                        if (!arg_key.empty()) args.push_back(arg_key + "=\"" + arg_val.to_string() + "\"");
-                        else args.push_back("\"" + arg_val.to_string() + "\"");
+                        
+                        // Safely escape single quotes and wrap the entire argument for the shell
+                        std::string safe_val = "";
+                        for (char c : arg_val.to_string()) {
+                            if (c == '\'') safe_val += "'\\''";
+                            else safe_val += c;
+                        }
+                        
+                        if (!arg_key.empty()) args.push_back(arg_key + "='" + safe_val + "'");
+                        else args.push_back("'" + safe_val + "'");
+                        
                         if (peek().type == TokenType::COMMA) advance();
                     }
                     if (peek().type == TokenType::RPAREN) advance(); 
@@ -275,7 +324,7 @@ class Parser {
                     
                     char buffer[128]; std::string result = "";
                     FILE* pipe = popen(cmd.c_str(), "r");
-                    if (!pipe) throw std::runtime_error("popen() failed executing library!");
+                    if (!pipe) raise_error("popen() failed executing library call", t);
                     
                     try { while (fgets(buffer, sizeof(buffer), pipe) != nullptr) result += buffer; } 
                     catch (...) { pclose(pipe); throw; }
@@ -340,7 +389,8 @@ class Parser {
     Value comparison() {
         Value val = term();
         while (peek().type == TokenType::EQUAL || peek().type == TokenType::LESS ||
-               peek().type == TokenType::GREATER || peek().type == TokenType::LESSEQUAL || peek().type == TokenType::GREATEREQUAL) {
+               peek().type == TokenType::GREATER || peek().type == TokenType::LESSEQUAL ||
+               peek().type == TokenType::GREATEREQUAL) {
             Token op = advance(); Value right = term();
             if (op.type == TokenType::EQUAL) {
                 if (val.type == ValueType::STRING || right.type == ValueType::STRING) val = Value(val.to_string() == right.to_string());
@@ -361,8 +411,12 @@ class Parser {
     }
 
 public:
-    Parser(std::vector<Token> t, Scope& l, Scope& g, ExecutionState& s) : tokens(t), local_scope(l), global_scope(g), state(s) {}
+    Parser(std::vector<Token> t, Scope& l, Scope& g, ExecutionState& s, int ln) 
+        : tokens(t), local_scope(l), global_scope(g), state(s), line_num(ln) {}
+
     TokenType current_token_type() { return peek().type; }
+    int current_token_char_pos() { return peek().char_pos; }
+
     Value expression() {
         Value val = logical_and();
         while (peek().type == TokenType::OR) { advance(); Value right = logical_and(); val = Value(val.to_bool() || right.to_bool()); }
@@ -406,7 +460,7 @@ bool check_key_pressed(const std::string& key_name) {
     return pressed;
 }
 
-Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, ExecutionState& state) {
+Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, ExecutionState& state, int line_num) {
     std::regex event_pattern("event:button-down\\.([a-zA-Z0-9_-]+)");
     std::smatch m;
     while (std::regex_search(expr, m, event_pattern)) {
@@ -424,11 +478,11 @@ Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, Executio
 
     Lexer lexer(expr);
     std::vector<Token> tokens = lexer.tokenize();
-    Parser parser(tokens, local_vars, global_vars, state);
+    Parser parser(tokens, local_vars, global_vars, state, line_num);
     Value result = parser.expression();
     
     if (parser.current_token_type() != TokenType::END) {
-        throw std::runtime_error("Invalid syntax in expression: unexpected trailing characters");
+        throw_error("Invalid syntax in expression: unexpected trailing characters", line_num, parser.current_token_char_pos());
     }
     return result;
 }
@@ -453,12 +507,13 @@ std::string strip_comments_and_normalize(std::string line) {
     return line;
 }
 
-std::vector<std::shared_ptr<ASTNode>> parse_blocks(const std::vector<std::string>& lines) {
+std::vector<std::shared_ptr<ASTNode>> parse_blocks(const std::vector<SourceLine>& lines) {
     std::vector<std::shared_ptr<ASTNode>> root;
     std::vector<std::pair<int, std::vector<std::shared_ptr<ASTNode>>*>> stack;
     stack.push_back({-1, &root});
 
-    for (const auto& line : lines) {
+    for (const auto& sl : lines) {
+        const auto& line = sl.text;
         if (line.find_first_not_of(" \t") == std::string::npos) continue;
 
         size_t indent_val = 0; size_t i = 0;
@@ -474,19 +529,23 @@ std::vector<std::shared_ptr<ASTNode>> parse_blocks(const std::vector<std::string
 
         auto new_node = std::make_shared<ASTNode>();
         new_node->line = stripped;
+        new_node->line_num = sl.line_num;
         stack.back().second->push_back(new_node);
         stack.push_back({static_cast<int>(indent_val), &(new_node->children)});
     }
     return root;
 }
 
-std::vector<std::string> preprocess_code(const std::string& code) {
-    std::vector<std::string> lines;
+std::vector<SourceLine> preprocess_code(const std::string& code) {
+    std::vector<SourceLine> lines;
     std::stringstream ss(code);
     std::string current_line, buffer = "";
+    int start_line_num = 1;
+    int current_line_num = 0;
     int in_parens = 0;
 
     while (std::getline(ss, current_line)) {
+        current_line_num++;
         std::string line = strip_comments_and_normalize(current_line);
         if (line.find_first_not_of(" \t\r\n") == std::string::npos && buffer.empty()) continue;
 
@@ -508,10 +567,11 @@ std::vector<std::string> preprocess_code(const std::string& code) {
             buffer += " " + trimmed;
         } else {
             buffer = line;
+            start_line_num = current_line_num;
         }
 
         if (in_parens <= 0) {
-            lines.push_back(buffer);
+            lines.push_back({buffer, start_line_num});
             buffer = ""; in_parens = 0;
         }
     }
@@ -540,7 +600,7 @@ void pre_run_checks(const std::vector<std::shared_ptr<ASTNode>>& nodes, const Ex
 
         if (is_blocked(line, state.blocked_statements)) {
             std::string first_cmd = line.substr(0, line.find_first_of(" \t("));
-            std::cerr << "Environment Security Error: The command starting with '" << first_cmd 
+            std::cerr << "Environment Security Error [Line " << node_ptr->line_num << "]: The command starting with '" << first_cmd 
                       << "' is blocked in the '" << state.active_env << "' environment.\n";
             std::exit(1);
         }
@@ -550,8 +610,11 @@ void pre_run_checks(const std::vector<std::shared_ptr<ASTNode>>& nodes, const Ex
         if (std::regex_search(line, match, var_pattern)) {
             std::string name = match[1].str();
             bool is_digit = true; for (char c : name) if (!std::isdigit(c)) is_digit = false;
-            if (is_digit || RESERVED_KEYWORDS.count(name)) {
-                std::cerr << "Syntax Error: Invalid variable name '" << name << "' in '" << line << "'\n"; std::exit(1);
+            if (is_digit) {
+                std::cerr << "Syntax Error [Line " << node_ptr->line_num << "]: Invalid variable name '" << name << "' (variable names cannot be purely numerical).\n"; std::exit(1);
+            }
+            if (RESERVED_KEYWORDS.count(name)) {
+                std::cerr << "Syntax Error [Line " << node_ptr->line_num << "]: Cannot use reserved keyword '" << name << "' as a variable name.\n"; std::exit(1);
             }
         }
 
@@ -559,8 +622,11 @@ void pre_run_checks(const std::vector<std::shared_ptr<ASTNode>>& nodes, const Ex
         if (std::regex_search(line, match, func_pattern)) {
             std::string name = match[1].str();
             bool is_digit = true; for (char c : name) if (!std::isdigit(c)) is_digit = false;
-            if (is_digit || RESERVED_KEYWORDS.count(name)) {
-                std::cerr << "Syntax Error: Invalid function name '" << name << "' in '" << line << "'\n"; std::exit(1);
+            if (is_digit) {
+                std::cerr << "Syntax Error [Line " << node_ptr->line_num << "]: Invalid function name '" << name << "' (function names cannot be purely numerical).\n"; std::exit(1);
+            }
+            if (RESERVED_KEYWORDS.count(name)) {
+                std::cerr << "Syntax Error [Line " << node_ptr->line_num << "]: Cannot use reserved keyword '" << name << "' as a function name.\n"; std::exit(1);
             }
         }
 
@@ -672,7 +738,8 @@ void ensure_library(const std::string& libname) {
         std::string raw_json((std::istreambuf_iterator<char>(jf)), std::istreambuf_iterator<char>());
         if (raw_json.find("404: Not Found") != std::string::npos) {
             std::cerr << "Error: Library '" << libname << "' missing.\n";
-            if (system(("rm -rf " + lib_dir).c_str()) != 0) {} std::exit(1);
+            if (system(("rm -rf " + lib_dir).c_str()) != 0) {}
+            std::exit(1);
         }
 
         std::regex sys_regex("\"supported-systems\"\\s*:\\s*\"([^\"]*)\"");
@@ -682,7 +749,8 @@ void ensure_library(const std::string& libname) {
             std::string my_os = get_os_base();
             if (supported.find(my_os) == std::string::npos) {
                 std::cerr << "Error: System not supported.\n";
-                if (system(("rm -rf " + lib_dir).c_str()) != 0) {} std::exit(1);
+                if (system(("rm -rf " + lib_dir).c_str()) != 0) {}
+                std::exit(1);
             }
         }
         
@@ -707,7 +775,7 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
         const auto& children = node_ptr->children;
 
         if (is_blocked(line, state.blocked_statements)) {
-            std::cerr << "Environment Security Error: restricted command.\n"; std::exit(1);
+            throw_error("Environment Security Error: restricted command execution.", node_ptr->line_num);
         }
 
         if (line.rfind("addlib ", 0) == 0) {
@@ -729,6 +797,9 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
         }
         else if (line.rfind("print(", 0) == 0) {
             size_t start = line.find('(') + 1; size_t end = line.rfind(')');
+            if (end == std::string::npos) {
+                throw_error("Syntax Error: Missing closing parenthesis in print call", node_ptr->line_num);
+            }
             std::string args_str = line.substr(start, end - start);
             std::vector<std::string> parts; std::string current = ""; bool in_str = false;
             char str_char = '\0'; int paren_depth = 0;
@@ -746,7 +817,7 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
             if (!current.empty()) parts.push_back(current);
 
             std::string out = "";
-            for (auto& part : parts) out += evaluate(part, local_vars, global_vars, state).to_string();
+            for (auto& part : parts) out += evaluate(part, local_vars, global_vars, state, node_ptr->line_num).to_string();
 
             size_t idx = 0; while ((idx = out.find("\\n", idx)) != std::string::npos) { out.replace(idx, 2, "\n"); idx += 1; }
             idx = 0; while ((idx = out.find("\\t", idx)) != std::string::npos) { out.replace(idx, 2, "\t"); idx += 1; }
@@ -762,26 +833,27 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
 
                 if (op == "$") target_env[name] = Value(!target_env[name].to_bool());
                 else {
-                    Value val = evaluate(expr, local_vars, global_vars, state);
+                    Value val = evaluate(expr, local_vars, global_vars, state, node_ptr->line_num);
                     double curr = target_env.count(name) ? target_env[name].to_number() : 0.0;
                     if (op == "=") target_env[name] = val;
                     else if (op == "+") target_env[name] = Value(curr + val.to_number());
                     else if (op == "-") target_env[name] = Value(curr - val.to_number());
                     else if (op == "*") target_env[name] = Value(curr * val.to_number());
                     else if (op == "/") {
-                        if (val.to_number() == 0.0) throw std::runtime_error("Zero division error");
+                        if (val.to_number() == 0.0) throw_error("Zero division error during assignment expression evaluation", node_ptr->line_num);
                         target_env[name] = Value(curr / val.to_number());
                     }
                     else if (op == "%") {
-                        if (val.to_number() == 0.0) throw std::runtime_error("Zero division error");
+                        if (val.to_number() == 0.0) throw_error("Zero division error (modulo) during assignment expression evaluation", node_ptr->line_num);
                         target_env[name] = Value(std::fmod(curr, val.to_number()));
                     }
                 }
-            } else throw std::runtime_error("Invalid assignment: '" + line + "'");
+            } else throw_error("Invalid variable declaration/assignment syntax: '" + line + "'", node_ptr->line_num);
         }
         else if (line.rfind("if ", 0) == 0) {
             size_t start = line.find('(') + 1; size_t end = line.rfind(')');
-            last_if_result = evaluate(line.substr(start, end - start), local_vars, global_vars, state).to_bool();
+            if (end == std::string::npos) throw_error("Syntax Error: Missing closing parenthesis in if statement", node_ptr->line_num);
+            last_if_result = evaluate(line.substr(start, end - start), local_vars, global_vars, state, node_ptr->line_num).to_bool();
             if (last_if_result) {
                 std::string res = run_ast(children, local_vars, global_vars, functions, state);
                 if (!res.empty()) return res;
@@ -790,7 +862,8 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
         else if (line.rfind("else if ", 0) == 0 || line.rfind("elseif ", 0) == 0) {
             if (!last_if_result) {
                 size_t start = line.find('(') + 1; size_t end = line.rfind(')');
-                if (evaluate(line.substr(start, end - start), local_vars, global_vars, state).to_bool()) {
+                if (end == std::string::npos) throw_error("Syntax Error: Missing closing parenthesis in elseif statement", node_ptr->line_num);
+                if (evaluate(line.substr(start, end - start), local_vars, global_vars, state, node_ptr->line_num).to_bool()) {
                     last_if_result = true; 
                     std::string res = run_ast(children, local_vars, global_vars, functions, state);
                     if (!res.empty()) return res;
@@ -805,7 +878,8 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
         }
         else if (line.rfind("until ", 0) == 0) {
             size_t start = line.find('(') + 1; size_t end = line.rfind(')');
-            while (!evaluate(line.substr(start, end - start), local_vars, global_vars, state).to_bool()) {
+            if (end == std::string::npos) throw_error("Syntax Error: Missing closing parenthesis in until statement", node_ptr->line_num);
+            while (!evaluate(line.substr(start, end - start), local_vars, global_vars, state, node_ptr->line_num).to_bool()) {
                 std::string res = run_ast(children, local_vars, global_vars, functions, state);
                 if (res == "exitloop") break;
                 if (!res.empty()) return res;
@@ -813,7 +887,8 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
         }
         else if (line.rfind("while ", 0) == 0) {
             size_t start = line.find('(') + 1; size_t end = line.rfind(')');
-            while (evaluate(line.substr(start, end - start), local_vars, global_vars, state).to_bool()) {
+            if (end == std::string::npos) throw_error("Syntax Error: Missing closing parenthesis in while statement", node_ptr->line_num);
+            while (evaluate(line.substr(start, end - start), local_vars, global_vars, state, node_ptr->line_num).to_bool()) {
                 std::string res = run_ast(children, local_vars, global_vars, functions, state);
                 if (res == "exitloop") break;
                 if (!res.empty()) return res;
@@ -821,7 +896,8 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
         }
         else if (line.rfind("repeat ", 0) == 0) {
             size_t start = line.find('(') + 1; size_t end = line.rfind(')');
-            int times = static_cast<int>(evaluate(line.substr(start, end - start), local_vars, global_vars, state).to_number());
+            if (end == std::string::npos) throw_error("Syntax Error: Missing closing parenthesis in repeat loop", node_ptr->line_num);
+            int times = static_cast<int>(evaluate(line.substr(start, end - start), local_vars, global_vars, state, node_ptr->line_num).to_number());
             for (int i = 0; i < times; i++) {
                 std::string res = run_ast(children, local_vars, global_vars, functions, state);
                 if (res == "exitloop") break;
@@ -835,8 +911,12 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
         }
         else if (line.rfind("dofunc ", 0) == 0) {
             size_t start_paren = line.find('('); size_t end_paren = line.rfind(')');
+            if (start_paren == std::string::npos || end_paren == std::string::npos) {
+                throw_error("Syntax Error: Missing functional parenthesis in dofunc call", node_ptr->line_num);
+            }
             std::string func_name = line.substr(7, start_paren - 7);
-            func_name.erase(0, func_name.find_first_not_of(" \t")); func_name.erase(func_name.find_last_not_of(" \t") + 1);
+            func_name.erase(0, func_name.find_first_not_of(" \t")); 
+            func_name.erase(func_name.find_last_not_of(" \t") + 1);
 
             std::string args_str = line.substr(start_paren + 1, end_paren - start_paren - 1);
             Scope kwargs;
@@ -862,7 +942,7 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
                     if (eq != std::string::npos) {
                         std::string p_name = part.substr(0, eq); std::string p_expr = part.substr(eq + 1);
                         p_name.erase(0, p_name.find_first_not_of(" \t")); p_name.erase(p_name.find_last_not_of(" \t") + 1);
-                        kwargs[p_name] = evaluate(p_expr, local_vars, global_vars, state);
+                        kwargs[p_name] = evaluate(p_expr, local_vars, global_vars, state, node_ptr->line_num);
                     }
                 }
             }
@@ -870,6 +950,8 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
             if (functions.count(func_name)) {
                 std::string res = run_ast(functions[func_name], kwargs, global_vars, functions, state);
                 if (res == "exitloop") return res;
+            } else {
+                throw_error("Unrecognized Function Call: No matching function named '" + func_name + "'", node_ptr->line_num);
             }
         }
         else if (line == "try") {
@@ -884,27 +966,31 @@ std::string run_ast(const std::vector<std::shared_ptr<ASTNode>>& nodes, Scope& l
             }
         }
         else if (line.rfind("wait ", 0) == 0) {
-            double sec = evaluate(line.substr(5), local_vars, global_vars, state).to_number();
+            double sec = evaluate(line.substr(5), local_vars, global_vars, state, node_ptr->line_num).to_number();
             usleep(static_cast<useconds_t>(sec * 1000000));
         }
         else if (line.rfind("warn(", 0) == 0) {
             size_t start = line.find('(') + 1; size_t end = line.rfind(')');
-            std::cerr << "WARNING: " << evaluate(line.substr(start, end - start), local_vars, global_vars, state).to_string() << "\n";
+            std::cerr << "WARNING [Line " << node_ptr->line_num << "]: " << evaluate(line.substr(start, end - start), local_vars, global_vars, state, node_ptr->line_num).to_string() << "\n";
         }
         else if (line.rfind("critical(", 0) == 0) {
             size_t start = line.find('(') + 1; size_t end = line.rfind(')');
-            std::cerr << "CRITICAL: " << evaluate(line.substr(start, end - start), local_vars, global_vars, state).to_string() << "\n";
+            std::cerr << "CRITICAL ERROR [Line " << node_ptr->line_num << "]: " << evaluate(line.substr(start, end - start), local_vars, global_vars, state, node_ptr->line_num).to_string() << "\n";
             std::exit(1);
         }
-        else if (line == "exit") { std::exit(0); }
-        else if (line == "exitloop") { return "exitloop"; }
+        else if (line == "exit") {
+            std::exit(0);
+        }
+        else if (line == "exitloop") {
+            return "exitloop";
+        }
         else {
             std::string first_word = "";
             for (char c : line) {
                 if (std::isalnum(c) || c == '_') first_word += c; else break;
             }
-            if (state.libraries.count(first_word)) evaluate(line, local_vars, global_vars, state);
-            else throw std::runtime_error("Syntax Error: Unrecognized command: '" + line + "'");
+            if (state.libraries.count(first_word)) evaluate(line, local_vars, global_vars, state, node_ptr->line_num);
+            else throw_error("Unrecognized Command / Token syntax: '" + line + "'", node_ptr->line_num);
         }
     }
     return "";
@@ -925,37 +1011,68 @@ void run_environment_tui() {
     std::string filepath = get_env_directory() + "/" + name + ".json";
     std::ofstream f(filepath);
     if (f.is_open()) {
-        f << "{\n    \"name\": \"" << name << "\",\n    \"max_mem_usage\": " << (mem.empty() ? "null" : mem) 
-          << ",\n    \"max_cpu_usage\": " << (cpu.empty() ? "null" : cpu) << ",\n    \"blocked_statements\": \"" << blocked << "\"\n}\n";
+        f << "{\n"
+          << "    \"name\": \"" << name << "\",\n"
+          << "    \"max_mem_usage\": " << (mem.empty() ? "null" : mem) << ",\n"
+          << "    \"max_cpu_usage\": " << (cpu.empty() ? "null" : cpu) << ",\n"
+          << "    \"blocked_statements\": \"" << blocked << "\"\n"
+          << "}\n";
         std::cout << "\nEnvironment creation is complete. You can now use \"" << name << "\" across Vex programs on your system.\n";
-    } else { std::cerr << "Error: Failed to write environment configuration.\n"; std::exit(1); }
+    } else {
+        std::cerr << "Error: Failed to write environment configuration.\n";
+        std::exit(1);
+    }
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) { std::cout << "Usage: vex <file.vex> OR vex env create\n"; return 1; }
+    if (argc < 2) {
+        std::cout << "Usage: vex <file.vex> OR vex env create\n";
+        return 1;
+    }
 
     std::string first_arg = argv[1];
     if (first_arg == "create" || (first_arg == "env" && argc >= 3 && std::string(argv[2]) == "create")) {
-        run_environment_tui(); return 0;
+        run_environment_tui();
+        return 0;
     }
 
-    std::string filepath = argv[1]; struct stat st;
-    if (stat(filepath.c_str(), &st) != 0) { std::cerr << "Error: File '" << filepath << "' not found.\n"; return 1; }
+    std::string filepath = argv[1];
+    struct stat st;
+    if (stat(filepath.c_str(), &st) != 0) {
+        std::cerr << "Error: File '" << filepath << "' not found.\n";
+        return 1;
+    }
+
     std::ifstream file(filepath);
-    if (!file.is_open()) { std::cerr << "Error: Could not open file '" << filepath << "'.\n"; return 1; }
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open file '" << filepath << "'.\n";
+        return 1;
+    }
 
     std::string code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    std::vector<std::string> lines = preprocess_code(code);
+    std::vector<SourceLine> lines = preprocess_code(code);
     std::vector<std::shared_ptr<ASTNode>> ast = parse_blocks(lines);
 
     ExecutionState state;
-    ensure_default_main_env(); apply_environment("main", state, false);
+    ensure_default_main_env();
+    apply_environment("main", state, false);
     pre_run_checks(ast, state);
 
-    Scope global_vars; Scope local_vars;
+    Scope global_vars;
+    Scope local_vars;
     std::unordered_map<std::string, std::vector<std::shared_ptr<ASTNode>>> functions;
 
-    try { run_ast(ast, local_vars, global_vars, functions, state); } 
-    catch (const std::exception& e) { std::cerr << "Fatal Runtime Error: " << e.what() << "\n"; return 1; }
+    try {
+        run_ast(ast, local_vars, global_vars, functions, state);
+    } 
+    catch (const std::exception& e) {
+        std::cerr << "\n=========================================================\n";
+        std::cerr << "                  VEX RUNTIME ERROR                      \n";
+        std::cerr << "=========================================================\n";
+        std::cerr << e.what() << "\n";
+        std::cerr << "=========================================================\n";
+        return 1;
+    }
+
     return 0;
 }
