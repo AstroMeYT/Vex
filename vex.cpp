@@ -44,23 +44,25 @@ struct Value {
             if (std::isinf(num_val)) return num_val > 0 ? "inf" : "-inf";
 
             // If it's a flat integer, print it without decimal points or scientific notation
-            if (num_val == std::floor(num_val)) {
-                std::ostringstream oss;
-                oss << std::fixed;
-                oss.precision(0);
-                oss << num_val;
-                return oss.str();
-            } else {
-                // For floats, use fixed layout with maximum double precision, stripping trailing zeroes
-                std::ostringstream oss;
-                oss << std::fixed;
-                oss.precision(16); // Maximum useful precision for standard 64-bit double
-                oss << num_val;
-                std::string s = oss.str();
-                s.erase(s.find_last_not_of('0') + 1, std::string::npos);
-                if (!s.empty() && s.back() == '.') s.pop_back();
-                return s;
+            if (num_val >= -9007199254740992.0 && num_val <= 9007199254740992.0) {
+                if (num_val == std::floor(num_val)) {
+                    std::ostringstream oss;
+                    oss << std::fixed;
+                    oss.precision(0);
+                    oss << num_val;
+                    return oss.str();
+                }
             }
+
+            // For floats, use fixed layout with maximum double precision, stripping trailing zeroes
+            std::ostringstream oss;
+            oss << std::fixed;
+            oss.precision(16); // Maximum useful precision for standard 64-bit double
+            oss << num_val;
+            std::string s = oss.str();
+            s.erase(s.find_last_not_of('0') + 1, std::string::npos);
+            if (!s.empty() && s.back() == '.') s.pop_back();
+            return s;
         }
         if (type == ValueType::BOOLEAN) return bool_val ? "True" : "False";
         if (type == ValueType::STRING) return str_val;
@@ -96,6 +98,18 @@ struct ASTNode {
     std::string line;
     std::vector<ASTNode> children;
 };
+
+// ==========================================
+// Static Analysis & Profile Configurations
+// ==========================================
+struct ExecutionState {
+    std::string active_env = "main";
+    std::vector<std::string> blocked_statements;
+    std::unordered_map<std::string, std::string> libraries; // alias -> exec_path mapping
+};
+
+// Forward declaration of the evaluate function for recursive AST evaluations
+Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, ExecutionState& state);
 
 // ==========================================
 // Expression Tokenizer & Parser (The eval engine)
@@ -214,6 +228,7 @@ class Parser {
     size_t index = 0;
     Scope& local_scope;
     Scope& global_scope;
+    ExecutionState& state;
 
     Token peek() { return tokens[index]; }
     Token advance() { return tokens[index++]; }
@@ -227,62 +242,147 @@ class Parser {
     Value primary() {
         Token t = peek();
         
-        // Handle native 'input' and 'input.number' functions
-        if (t.type == TokenType::IDENTIFIER && t.text == "input") {
-            advance(); // consume "input"
-            if (peek().type == TokenType::DOT) {
-                advance(); // consume "."
-                Token member = peek();
-                if (member.type == TokenType::IDENTIFIER && member.text == "number") {
-                    advance(); // consume "number"
-                    if (peek().type == TokenType::LPAREN) {
-                        advance(); // consume "("
-                        Value prompt("");
-                        if (peek().type != TokenType::RPAREN) {
-                            prompt = expression();
-                        }
-                        if (peek().type == TokenType::RPAREN) advance(); // consume ")"
-                        
-                        std::string prompt_str = prompt.to_string();
-                        std::cout << prompt_str << std::flush;
-                        std::string user_in;
-                        if (!std::getline(std::cin, user_in)) {
-                            return Value(0.0);
-                        }
-                        // Validate number parseability
-                        try {
-                            size_t idx = 0;
-                            // Trim bounds
-                            size_t first = user_in.find_first_not_of(" \t\r\n");
-                            size_t last = user_in.find_last_not_of(" \t\r\n");
-                            if (first != std::string::npos) {
-                                std::string trimmed = user_in.substr(first, (last - first + 1));
-                                double num = std::stod(trimmed, &idx);
-                                if (idx == trimmed.size()) {
-                                    return Value(num);
-                                }
+        if (t.type == TokenType::IDENTIFIER) {
+            // 1. Built-in input / input.number
+            if (t.text == "input") {
+                advance(); // consume "input"
+                if (peek().type == TokenType::DOT) {
+                    advance(); // consume "."
+                    Token member = peek();
+                    if (member.type == TokenType::IDENTIFIER && member.text == "number") {
+                        advance(); // consume "number"
+                        if (peek().type == TokenType::LPAREN) {
+                            advance(); // consume "("
+                            Value prompt("");
+                            if (peek().type != TokenType::RPAREN) {
+                                prompt = expression();
                             }
-                        } catch (...) {}
-                        // Throw runtime exception to let Vex try/catch block handle invalid submissions
-                        throw std::runtime_error("Invalid numeric input to input.number()");
+                            if (peek().type == TokenType::RPAREN) advance(); // consume ")"
+                            
+                            std::string prompt_str = prompt.to_string();
+                            std::cout << prompt_str << std::flush;
+                            std::string user_in;
+                            if (!std::getline(std::cin, user_in)) {
+                                return Value(0.0);
+                            }
+                            try {
+                                size_t idx = 0;
+                                size_t first = user_in.find_first_not_of(" \t\r\n");
+                                size_t last = user_in.find_last_not_of(" \t\r\n");
+                                if (first != std::string::npos) {
+                                    std::string trimmed = user_in.substr(first, (last - first + 1));
+                                    double num = std::stod(trimmed, &idx);
+                                    if (idx == trimmed.size()) return Value(num);
+                                }
+                            } catch (...) {}
+                            throw std::runtime_error("Invalid numeric input to input.number()");
+                        }
+                    }
+                } else if (peek().type == TokenType::LPAREN) {
+                    advance(); // consume "("
+                    Value prompt("");
+                    if (peek().type != TokenType::RPAREN) {
+                        prompt = expression();
+                    }
+                    if (peek().type == TokenType::RPAREN) advance(); // consume ")"
+                    
+                    std::cout << prompt.to_string() << std::flush;
+                    std::string user_in;
+                    if (std::getline(std::cin, user_in)) {
+                        return Value(user_in);
+                    }
+                    return Value("");
+                }
+                return lookup_var("input");
+            }
+
+            // 2. Custom Addon Libraries Execution
+            if (state.libraries.count(t.text)) {
+                advance(); // consume library alias
+                std::string exec_path = state.libraries[t.text];
+                std::vector<std::string> opcodes;
+                
+                // Parse opcodes via dot-notation
+                while (peek().type == TokenType::DOT) {
+                    advance(); // consume '.'
+                    Token member = peek();
+                    if (member.type == TokenType::IDENTIFIER) {
+                        opcodes.push_back(member.text);
+                        advance();
+                    } else {
+                        throw std::runtime_error("Expected identifier after '.' in library call");
                     }
                 }
-            } else if (peek().type == TokenType::LPAREN) {
-                advance(); // consume "("
-                Value prompt("");
-                if (peek().type != TokenType::RPAREN) {
-                    prompt = expression();
-                }
-                if (peek().type == TokenType::RPAREN) advance(); // consume ")"
                 
-                std::cout << prompt.to_string() << std::flush;
-                std::string user_in;
-                if (std::getline(std::cin, user_in)) {
-                    return Value(user_in);
+                if (peek().type == TokenType::LPAREN) {
+                    advance(); // consume '('
+                    
+                    std::vector<std::string> args;
+                    while (peek().type != TokenType::RPAREN && peek().type != TokenType::END) {
+                        std::string arg_key = "";
+                        
+                        // Lookahead to see if argument is a Key=Value mapping
+                        if (peek().type == TokenType::IDENTIFIER) {
+                            // Check the NEXT token (index + 1) for the equals sign, not the current one
+                            if (index + 1 < tokens.size() && tokens[index + 1].type == TokenType::EQUAL) {
+                                arg_key = peek().text;
+                                advance(); // consume Key identifier
+                                advance(); // consume '='
+                            }
+                        }
+                        
+                        Value arg_val = expression();
+                        if (!arg_key.empty()) {
+                            args.push_back(arg_key + "=\"" + arg_val.to_string() + "\"");
+                        } else {
+                            args.push_back("\"" + arg_val.to_string() + "\"");
+                        }
+                        
+                        if (peek().type == TokenType::COMMA) advance();
+                    }
+                    if (peek().type == TokenType::RPAREN) advance(); // consume ')'
+                    
+                    // Compile command
+                    std::string cmd = exec_path;
+                    for (const auto& op : opcodes) cmd += " " + op;
+                    for (const auto& a : args) cmd += " " + a;
+                    
+                    // Execute Shell Popen command
+                    char buffer[128];
+                    std::string result = "";
+                    FILE* pipe = popen(cmd.c_str(), "r");
+                    if (!pipe) throw std::runtime_error("popen() failed executing library!");
+                    
+                    try {
+                        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                            result += buffer;
+                        }
+                    } catch (...) {
+                        pclose(pipe);
+                        throw;
+                    }
+                    pclose(pipe);
+                    
+                    // Format Output
+                    if (!result.empty()) {
+                        result.erase(result.find_last_not_of(" \n\r\t") + 1);
+                    }
+                    
+                    try {
+                        size_t idx;
+                        double d = std::stod(result, &idx);
+                        if (idx == result.size()) return Value(d);
+                    } catch (...) {}
+                    
+                    return Value(result);
+                } else {
+                    return Value(0.0);
                 }
-                return Value("");
             }
-            return lookup_var("input");
+
+            // 3. Normal variable fallback
+            advance(); // consume identifier
+            return lookup_var(t.text);
         }
         
         if (t.type == TokenType::NUMBER) {
@@ -300,10 +400,6 @@ class Parser {
         if (t.type == TokenType::FALSE_LIT) {
             advance();
             return Value(false);
-        }
-        if (t.type == TokenType::IDENTIFIER) {
-            advance();
-            return lookup_var(t.text);
         }
         if (t.type == TokenType::LPAREN) {
             advance();
@@ -394,7 +490,7 @@ class Parser {
     }
 
 public:
-    Parser(std::vector<Token> t, Scope& l, Scope& g) : tokens(t), local_scope(l), global_scope(g) {}
+    Parser(std::vector<Token> t, Scope& l, Scope& g, ExecutionState& s) : tokens(t), local_scope(l), global_scope(g), state(s) {}
 
     Value expression() {
         Value val = logical_and();
@@ -455,7 +551,7 @@ bool check_key_pressed(const std::string& key_name) {
 }
 
 // Helper evaluator wrapper
-Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars) {
+Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, ExecutionState& state) {
     // Dynamic matching of button events
     std::regex event_pattern("event:button-down\\.([a-zA-Z0-9_-]+)");
     std::smatch m;
@@ -477,7 +573,7 @@ Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars) {
 
     Lexer lexer(expr);
     std::vector<Token> tokens = lexer.tokenize();
-    Parser parser(tokens, local_vars, global_vars);
+    Parser parser(tokens, local_vars, global_vars, state);
     return parser.expression();
 }
 
@@ -485,7 +581,6 @@ Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars) {
 // Parsing & Preprocessing Structure
 // ==========================================
 std::string strip_comments_and_normalize(std::string line) {
-    // Replace smart quotes
     size_t pos;
     while ((pos = line.find("“")) != std::string::npos) line.replace(pos, 3, "\"");
     while ((pos = line.find("”")) != std::string::npos) line.replace(pos, 3, "\"");
@@ -507,7 +602,6 @@ std::string strip_comments_and_normalize(std::string line) {
             break;
         }
     }
-    // Trim right trailing spaces
     while (!line.empty() && std::isspace(line.back())) {
         line.pop_back();
     }
@@ -541,7 +635,6 @@ std::vector<std::string> preprocess_code(const std::string& code) {
         }
 
         if (!buffer.empty()) {
-            // Trim leading spaces for joined line
             size_t start = line.find_first_not_of(" \t");
             std::string trimmed = (start == std::string::npos) ? "" : line.substr(start);
             buffer += " " + trimmed;
@@ -583,19 +676,14 @@ std::vector<ASTNode> parse_blocks(const std::vector<std::string>& lines) {
 
         ASTNode new_node{stripped, {}};
         stack.back().second->push_back(new_node);
-        // Point stack reference directly to children layer of the newly pushed node
         stack.push_back({static_cast<int>(indent), &(stack.back().second->back().children)});
     }
     return root;
 }
 
 // ==========================================
-// Static Analysis & Profile Configurations
+// Advanced Library & Environment Configs
 // ==========================================
-struct ExecutionState {
-    std::string active_env = "main";
-    std::vector<std::string> blocked_statements;
-};
 
 const std::unordered_set<std::string> RESERVED_KEYWORDS = {
     "globalvar", "localvar", "globvar", "function", "dofunc", "if", "else", "until", 
@@ -624,7 +712,6 @@ void pre_run_checks(const std::vector<ASTNode>& nodes, const ExecutionState& sta
             std::exit(1);
         }
 
-        // Variable keyword checks
         std::regex var_pattern("^(?:globalvar|localvar|globvar)\\s+([a-zA-Z_]\\w*)");
         std::smatch match;
         if (std::regex_search(line, match, var_pattern)) {
@@ -641,7 +728,6 @@ void pre_run_checks(const std::vector<ASTNode>& nodes, const ExecutionState& sta
             }
         }
 
-        // Function keyword checks
         std::regex func_pattern("^function\\s+([a-zA-Z_]\\w*)");
         if (std::regex_search(line, match, func_pattern)) {
             std::string name = match[1].str();
@@ -663,11 +749,47 @@ void pre_run_checks(const std::vector<ASTNode>& nodes, const ExecutionState& sta
     }
 }
 
-// System Profiles setup
+// Robust host OS platform detection
+std::string get_os_base() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    #if defined(__aarch64__)
+        return "macos-m-chip";
+    #else
+        return "macos-intel";
+    #endif
+#elif defined(__linux__)
+    std::ifstream os_release("/etc/os-release");
+    if (os_release.is_open()) {
+        std::string line;
+        std::string combined = "";
+        while (std::getline(os_release, line)) {
+            if (line.rfind("ID=", 0) == 0 || line.rfind("ID_LIKE=", 0) == 0) {
+                for (char& c : line) c = std::tolower(c);
+                combined += line + " ";
+            }
+        }
+        if (combined.find("debian") != std::string::npos || combined.find("ubuntu") != std::string::npos) return "debian";
+        if (combined.find("arch") != std::string::npos || combined.find("manjaro") != std::string::npos) return "arch";
+        if (combined.find("rhel") != std::string::npos || combined.find("fedora") != std::string::npos || combined.find("centos") != std::string::npos) return "redhat";
+    }
+    return "debian"; // Default linux fallback structure
+#else
+    return "debian";
+#endif
+}
+
 std::string get_env_directory() {
     const char* home = std::getenv("HOME");
     if (!home) return ".vex_environments";
     return std::string(home) + "/.vex_environments";
+}
+
+std::string get_lib_directory() {
+    const char* home = std::getenv("HOME");
+    if (!home) return ".vex_libraries";
+    return std::string(home) + "/.vex_libraries";
 }
 
 void ensure_default_main_env() {
@@ -699,7 +821,6 @@ void apply_environment(const std::string& env_name, ExecutionState& state, bool 
         if (f.is_open()) {
             std::string raw_json((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
             
-            // Basic regex key parsing for standard json values
             std::regex blocked_regex("\"blocked_statements\"\\s*:\\s*\"([^\"]*)\"");
             std::smatch m;
             if (std::regex_search(raw_json, m, blocked_regex)) {
@@ -708,7 +829,6 @@ void apply_environment(const std::string& env_name, ExecutionState& state, bool 
                 std::string item;
                 state.blocked_statements.clear();
                 while (std::getline(ss, item, ',')) {
-                    // Trim whitespaces
                     size_t first = item.find_first_not_of(" \t");
                     size_t last = item.find_last_not_of(" \t");
                     if (first != std::string::npos && last != std::string::npos) {
@@ -717,7 +837,6 @@ void apply_environment(const std::string& env_name, ExecutionState& state, bool 
                 }
             }
 
-            // Memory resource allocation limits
             std::regex mem_regex("\"max_mem_usage\"\\s*:\\s*(\\d+)");
             if (std::regex_search(raw_json, m, mem_regex)) {
                 long long limit_mb = std::stoll(m[1].str());
@@ -728,7 +847,6 @@ void apply_environment(const std::string& env_name, ExecutionState& state, bool 
                 setrlimit(RLIMIT_AS, &rl);
             }
 
-            // CPU scheduling boundaries (Niceness mapping)
             std::regex cpu_regex("\"max_cpu_usage\"\\s*:\\s*(\\d+)");
             if (std::regex_search(raw_json, m, cpu_regex)) {
                 int cpu_percent = std::stoi(m[1].str());
@@ -744,6 +862,69 @@ void apply_environment(const std::string& env_name, ExecutionState& state, bool 
             std::exit(1);
         }
         state.blocked_statements.clear();
+    }
+}
+
+// Download utility for dynamically importing external C++ / Python Libraries from AstroMeYT GitHub
+void ensure_library(const std::string& libname) {
+    std::string lib_dir = get_lib_directory() + "/" + libname;
+    std::string exec_path = lib_dir + "/" + libname;
+    std::string json_path = lib_dir + "/library-info.json";
+    
+    struct stat st;
+    if (stat(exec_path.c_str(), &st) != 0) {
+        std::cout << "Downloading library '" << libname << "'...\n" << std::flush;
+        std::string mkdir_cmd = "mkdir -p " + lib_dir;
+        if (system(mkdir_cmd.c_str()) != 0) {}
+
+        std::string base_url = "https://raw.githubusercontent.com/AstroMeYT/Vex/main/VexLibC/" + libname + "/";
+        std::string json_url = base_url + "library-info.json";
+        std::string dl_json = "curl -s -o " + json_path + " " + json_url;
+        if (system(dl_json.c_str()) != 0) {}
+        
+        std::ifstream jf(json_path);
+        if (!jf.is_open()) {
+            std::cerr << "Error: Could not find library '" << libname << "' in VexLibC.\n";
+            std::exit(1);
+        }
+        
+        std::string raw_json((std::istreambuf_iterator<char>(jf)), std::istreambuf_iterator<char>());
+        
+        if (raw_json.find("404: Not Found") != std::string::npos) {
+            std::cerr << "Error: Library '" << libname << "' does not exist in VexLibC.\n";
+            std::string rm_cmd = "rm -rf " + lib_dir;
+            if (system(rm_cmd.c_str()) != 0) {}
+            std::exit(1);
+        }
+
+        std::regex sys_regex("\"supported-systems\"\\s*:\\s*\"([^\"]*)\"");
+        std::smatch m;
+        if (std::regex_search(raw_json, m, sys_regex)) {
+            std::string supported = m[1].str();
+            std::string my_os = get_os_base();
+            if (supported.find(my_os) == std::string::npos) {
+                std::cerr << "Error: Library '" << libname << "' does not support your system (" << my_os << ").\n";
+                std::cerr << "Supported systems: " << supported << "\n";
+                std::string rm_cmd = "rm -rf " + lib_dir;
+                if (system(rm_cmd.c_str()) != 0) {}
+                std::exit(1);
+            }
+        } else {
+            std::cerr << "Warning: library-info.json missing 'supported-systems'. Attempting download anyway.\n";
+        }
+        
+        std::string exec_url = base_url + libname;
+        std::string dl_exec = "curl -s -o " + exec_path + " " + exec_url;
+        if (system(dl_exec.c_str()) != 0) {}
+        
+        // Final existence and permission check
+        if (stat(exec_path.c_str(), &st) != 0) {
+            std::cerr << "Error: Failed to download executable for library '" << libname << "'.\n";
+            std::exit(1);
+        }
+        
+        chmod(exec_path.c_str(), 0755); // Explicit CHMOD required to assign execution status locally 
+        std::cout << "Library '" << libname << "' installed successfully.\n" << std::flush;
     }
 }
 
@@ -765,11 +946,27 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
         }
 
         if (line.rfind("addlib ", 0) == 0) {
-            continue; // Unsupported modules stub
+            std::string rem = line.substr(7);
+            rem.erase(0, rem.find_first_not_of(" \t"));
+            std::string libname, alias;
+            
+            size_t as_pos = rem.find(" as ");
+            if (as_pos != std::string::npos) {
+                libname = rem.substr(0, as_pos);
+                alias = rem.substr(as_pos + 4);
+                libname.erase(libname.find_last_not_of(" \t") + 1);
+                alias.erase(0, alias.find_first_not_of(" \t"));
+            } else {
+                libname = rem;
+                alias = libname; // defaults to internal library name if no alias matches
+            }
+            
+            ensure_library(libname);
+            state.libraries[alias] = get_lib_directory() + "/" + libname + "/" + libname;
+            continue;
         }
         else if (line.rfind("env ", 0) == 0) {
             std::string env_name = line.substr(4);
-            // Trim quotes and whitespace
             env_name.erase(std::remove(env_name.begin(), env_name.end(), '\"'), env_name.end());
             env_name.erase(std::remove(env_name.begin(), env_name.end(), '\''), env_name.end());
             apply_environment(env_name, state, true);
@@ -779,7 +976,6 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
             size_t end = line.rfind(')');
             std::string args_str = line.substr(start, end - start);
             
-            // Balanced parser for comma-separated expressions
             std::vector<std::string> parts;
             std::string current = "";
             bool in_str = false;
@@ -804,11 +1000,10 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
 
             std::string out = "";
             for (auto& part : parts) {
-                Value val = evaluate(part, local_vars, global_vars);
+                Value val = evaluate(part, local_vars, global_vars, state);
                 out += val.to_string();
             }
 
-            // Unescape characters
             size_t idx = 0;
             while ((idx = out.find("\\n", idx)) != std::string::npos) { out.replace(idx, 2, "\n"); idx += 1; }
             idx = 0;
@@ -829,7 +1024,7 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
                 if (op == "$") {
                     target_env[name] = Value(!target_env[name].to_bool());
                 } else {
-                    Value val = evaluate(expr, local_vars, global_vars);
+                    Value val = evaluate(expr, local_vars, global_vars, state);
                     double curr = target_env.count(name) ? target_env[name].to_number() : 0.0;
                     if (op == "=") target_env[name] = val;
                     else if (op == "+") target_env[name] = Value(curr + val.to_number());
@@ -854,7 +1049,7 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
             size_t start = line.find('(') + 1;
             size_t end = line.rfind(')');
             std::string cond_str = line.substr(start, end - start);
-            last_if_result = evaluate(cond_str, local_vars, global_vars).to_bool();
+            last_if_result = evaluate(cond_str, local_vars, global_vars, state).to_bool();
             if (last_if_result) {
                 std::string res = run_ast(children, local_vars, global_vars, functions, state);
                 if (!res.empty()) return res;
@@ -870,7 +1065,7 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
             size_t start = line.find('(') + 1;
             size_t end = line.rfind(')');
             std::string cond_str = line.substr(start, end - start);
-            while (!evaluate(cond_str, local_vars, global_vars).to_bool()) {
+            while (!evaluate(cond_str, local_vars, global_vars, state).to_bool()) {
                 std::string res = run_ast(children, local_vars, global_vars, functions, state);
                 if (res == "exitloop") break;
                 if (!res.empty()) return res;
@@ -880,7 +1075,7 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
             size_t start = line.find('(') + 1;
             size_t end = line.rfind(')');
             std::string cond_str = line.substr(start, end - start);
-            while (evaluate(cond_str, local_vars, global_vars).to_bool()) {
+            while (evaluate(cond_str, local_vars, global_vars, state).to_bool()) {
                 std::string res = run_ast(children, local_vars, global_vars, functions, state);
                 if (res == "exitloop") break;
                 if (!res.empty()) return res;
@@ -890,7 +1085,7 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
             size_t start = line.find('(') + 1;
             size_t end = line.rfind(')');
             std::string cond_str = line.substr(start, end - start);
-            int times = static_cast<int>(evaluate(cond_str, local_vars, global_vars).to_number());
+            int times = static_cast<int>(evaluate(cond_str, local_vars, global_vars, state).to_number());
             for (int i = 0; i < times; i++) {
                 std::string res = run_ast(children, local_vars, global_vars, functions, state);
                 if (res == "exitloop") break;
@@ -899,7 +1094,6 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
         }
         else if (line.rfind("function ", 0) == 0) {
             std::string name = line.substr(9);
-            // Trim whitespace
             name.erase(0, name.find_first_not_of(" \t"));
             name.erase(name.find_last_not_of(" \t") + 1);
             functions[name] = children;
@@ -914,7 +1108,6 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
             std::string args_str = line.substr(start_paren + 1, end_paren - start_paren - 1);
             Scope kwargs;
 
-            // Simple balanced parameter parser
             if (args_str.find_first_not_of(" \t") != std::string::npos) {
                 std::vector<std::string> parts;
                 std::string current = "";
@@ -945,7 +1138,7 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
                         std::string p_expr = part.substr(eq + 1);
                         p_name.erase(0, p_name.find_first_not_of(" \t"));
                         p_name.erase(p_name.find_last_not_of(" \t") + 1);
-                        kwargs[p_name] = evaluate(p_expr, local_vars, global_vars);
+                        kwargs[p_name] = evaluate(p_expr, local_vars, global_vars, state);
                     }
                 }
             }
@@ -971,20 +1164,20 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
             }
         }
         else if (line.rfind("wait ", 0) == 0) {
-            double sec = evaluate(line.substr(5), local_vars, global_vars).to_number();
+            double sec = evaluate(line.substr(5), local_vars, global_vars, state).to_number();
             usleep(static_cast<useconds_t>(sec * 1000000));
         }
         else if (line.rfind("warn(", 0) == 0) {
             size_t start = line.find('(') + 1;
             size_t end = line.rfind(')');
             std::string msg = line.substr(start, end - start);
-            std::cerr << "WARNING: " << evaluate(msg, local_vars, global_vars).to_string() << "\n";
+            std::cerr << "WARNING: " << evaluate(msg, local_vars, global_vars, state).to_string() << "\n";
         }
         else if (line.rfind("critical(", 0) == 0) {
             size_t start = line.find('(') + 1;
             size_t end = line.rfind(')');
             std::string msg = line.substr(start, end - start);
-            std::cerr << "CRITICAL: " << evaluate(msg, local_vars, global_vars).to_string() << "\n";
+            std::cerr << "CRITICAL: " << evaluate(msg, local_vars, global_vars, state).to_string() << "\n";
             std::exit(1);
         }
         else if (line == "exit") {
@@ -994,7 +1187,19 @@ std::string run_ast(const std::vector<ASTNode>& nodes, Scope& local_vars, Scope&
             return "exitloop";
         }
         else {
-            throw std::runtime_error("Syntax Error: Unrecognized command: '" + line + "'");
+            // Extract the first identifier to check if it's a standalone library call
+            std::string first_word = "";
+            for (char c : line) {
+                if (std::isalnum(c) || c == '_') first_word += c;
+                else break;
+            }
+            
+            if (state.libraries.count(first_word)) {
+                // Evaluate as a standalone library execution
+                evaluate(line, local_vars, global_vars, state);
+            } else {
+                throw std::runtime_error("Syntax Error: Unrecognized command: '" + line + "'");
+            }
         }
     }
     return "";
