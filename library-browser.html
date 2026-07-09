@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vex Library Collection (VexLibC)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #1c1c1c !important;
+        }
+        /* Custom scrollbar matching dark style */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1c1c1c;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #2e2e2e;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #3e3e3e;
+        }
+    </style>
+</head>
+<body class="text-gray-200 antialiased font-sans p-6 min-h-screen">
+
+    <div class="max-w-6xl mx-auto space-y-8">
+        
+        <!-- Header & Search Hub -->
+        <div class="space-y-4">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                    <h1 class="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+                        <span class="text-zinc-500">VexLibC</span> / Library Collection
+                    </h1>
+                    <p class="text-sm text-zinc-400">Discover and import standard add-on modules dynamically into Vex Runtime.</p>
+                </div>
+            </div>
+
+            <!-- Search Area -->
+            <div class="relative">
+                <input 
+                    type="text" 
+                    id="search-input" 
+                    oninput="filterLibraries()"
+                    placeholder="Search libraries by title, keyword, author or OS..." 
+                    class="w-full bg-[#252525] border border-zinc-800 rounded-lg px-4 py-3 pl-11 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600 transition-all"
+                >
+                <span class="absolute inset-y-0 left-4 flex items-center text-zinc-500 pointer-events-none">
+                    <!-- Search Icon SVG -->
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                </span>
+            </div>
+        </div>
+
+        <!-- Library Grid -->
+        <div id="library-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Loading Skeleton Blocks -->
+            <div class="bg-[#242424] border border-zinc-800/80 rounded-lg p-5 space-y-4 animate-pulse">
+                <div class="h-5 bg-zinc-800 rounded w-1/3"></div>
+                <div class="h-4 bg-zinc-800 rounded w-1/4"></div>
+                <div class="space-y-2">
+                    <div class="h-3 bg-zinc-800 rounded"></div>
+                    <div class="h-3 bg-zinc-800 rounded w-5/6"></div>
+                </div>
+                <div class="flex gap-2">
+                    <div class="h-5 bg-zinc-800 rounded w-12"></div>
+                    <div class="h-5 bg-zinc-800 rounded w-16"></div>
+                </div>
+            </div>
+            <div class="bg-[#242424] border border-zinc-800/80 rounded-lg p-5 space-y-4 animate-pulse">
+                <div class="h-5 bg-zinc-800 rounded w-1/2"></div>
+                <div class="h-4 bg-zinc-800 rounded w-1/4"></div>
+                <div class="space-y-2">
+                    <div class="h-3 bg-zinc-800 rounded"></div>
+                    <div class="h-3 bg-zinc-800 rounded w-3/4"></div>
+                </div>
+                <div class="flex gap-2">
+                    <div class="h-5 bg-zinc-800 rounded w-16"></div>
+                </div>
+            </div>
+            <div class="bg-[#242424] border border-zinc-800/80 rounded-lg p-5 space-y-4 animate-pulse">
+                <div class="h-5 bg-zinc-800 rounded w-1/3"></div>
+                <div class="h-4 bg-zinc-800 rounded w-1/3"></div>
+                <div class="space-y-2">
+                    <div class="h-3 bg-zinc-800 rounded"></div>
+                    <div class="h-3 bg-zinc-800 rounded w-5/6"></div>
+                </div>
+                <div class="flex gap-2">
+                    <div class="h-5 bg-zinc-800 rounded w-12"></div>
+                    <div class="h-5 bg-zinc-800 rounded w-12"></div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Core Runtime JavaScript Engine -->
+    <script>
+        const REPO_OWNER = 'AstroMeYT';
+        const REPO_NAME = 'Vex';
+        const FOLDER_PATH = 'VexLibC';
+
+        let libraries = [];
+
+        // Integrated cached fallback (Only used if the entire GitHub API root rate-limits us)
+        const fallbackLibraries = [
+            {
+                name: "fetch",
+                title: "Fetch CURL Client",
+                author: "Vex Core Developers",
+                description: "Native module designed to issue high-performance HTTP requests (GET, POST, PUT, DELETE) right from your scripts.",
+                supportedSystems: ["debian", "ubuntu", "arch", "redhat", "macos-intel", "macos-m-chip", "windows"]
+            },
+            {
+                name: "json",
+                title: "JSON Utility Engine",
+                author: "Vex Core Developers",
+                description: "Advanced JSON serialization utility. Effortlessly extract and modify keys with getkey and setkey parameters.",
+                supportedSystems: ["debian", "ubuntu", "arch", "redhat", "macos-intel", "macos-m-chip", "windows"]
+            },
+            {
+                name: "screen",
+                title: "Screen Visual Manager",
+                author: "Vex Hardware Group",
+                description: "Control terminal outputs, manipulate color spaces, clear screen viewports, and design responsive console user interfaces.",
+                supportedSystems: ["debian", "ubuntu", "arch", "redhat", "macos-intel", "macos-m-chip"]
+            }
+        ];
+
+        async function fetchRegistry() {
+            try {
+                // Fetch directory contents. Bypassing cache to ensure live directory additions show up.
+                const response = await fetch(`https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${FOLDER_PATH}`, { cache: "no-store" });
+                if (!response.ok) throw new Error("API Limit reached or repository unavailable");
+
+                const contents = await response.json();
+                const folders = contents.filter(item => item.type === 'dir');
+
+                // Crawl metadata JSON from each folder independently
+                const libraryPromises = folders.map(async (folder) => {
+                    const infoUrl = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/${FOLDER_PATH}/${folder.name}/library-info.json`;
+                    
+                    try {
+                        // Force bypass cache for individual files so recently edited JSONs load correctly
+                        const infoResponse = await fetch(infoUrl, { cache: "no-store" });
+                        if (!infoResponse.ok) throw new Error(`HTTP ${infoResponse.status}`);
+                        const metadata = await infoResponse.json();
+                        
+                        // Helper to safely extract keys regardless of casing
+                        const getSafeKey = (keys) => {
+                            for (let k of keys) {
+                                if (metadata[k] !== undefined) return metadata[k];
+                            }
+                            return null;
+                        };
+
+                        // Robust Extraction (Strictly relies on the fetched JSON)
+                        const rawTitle = getSafeKey(['title', 'Title', 'name', 'Name']) || folder.name;
+                        const rawAuthor = getSafeKey(['author', 'Author', 'developer', 'Developer']) || "Anonymous";
+                        
+                        let rawDesc = getSafeKey(['description', 'Description', 'desc', 'Desc']);
+                        if (Array.isArray(rawDesc)) rawDesc = rawDesc.join(' ');
+                        else if (!rawDesc) rawDesc = "No description provided.";
+
+                        let systems = ["unknown"];
+                        const rawSys = getSafeKey(['supported-systems', 'supported_systems', 'Supported-Systems', 'systems', 'Systems']);
+                        if (rawSys) {
+                            if (Array.isArray(rawSys)) {
+                                systems = rawSys.map(s => String(s).trim());
+                            } else {
+                                systems = String(rawSys).split(',').map(s => s.trim());
+                            }
+                        }
+
+                        return {
+                            name: folder.name,
+                            title: rawTitle,
+                            author: rawAuthor,
+                            description: rawDesc,
+                            supportedSystems: systems
+                        };
+                    } catch (e) {
+                        console.warn(`[VexLibC] Failed to retrieve or parse library-info.json for: ${folder.name}`, e);
+                        
+                        // Render a pure error card so you visually KNOW the fetch failed, rather than masking it
+                        return {
+                            name: folder.name,
+                            title: folder.name,
+                            author: "Unknown",
+                            description: "Failed to load library-info.json. Check repository path or JSON syntax.",
+                            supportedSystems: ["unknown"]
+                        };
+                    }
+                });
+
+                libraries = await Promise.all(libraryPromises);
+
+            } catch (err) {
+                // This block ONLY runs if the entire GitHub API rejects the root directory fetch (e.g. rate limit)
+                console.error("Root registry fetch failed:", err);
+                libraries = [...fallbackLibraries];
+            }
+
+            renderLibraries(libraries);
+        }
+
+        function renderLibraries(list) {
+            const grid = document.getElementById('library-grid');
+            if (list.length === 0) {
+                grid.innerHTML = `
+                    <div class="col-span-full py-16 text-center space-y-3">
+                        <svg class="w-12 h-12 mx-auto text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <h4 class="text-gray-300 font-medium">No Matching Add-ons Found</h4>
+                        <p class="text-xs text-zinc-500 max-w-sm mx-auto">Try refining your keyword constraints or check spelling of target components.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            grid.innerHTML = list.map(lib => {
+                const systemBadges = lib.supportedSystems.map(sys => {
+                    const sysLower = sys.toLowerCase();
+                    let colorClasses = "bg-zinc-800 text-zinc-400 border-zinc-700/50";
+                    if (sysLower === 'windows') colorClasses = "bg-blue-950/30 text-blue-400 border-blue-900/30";
+                    else if (sysLower.startsWith('macos')) colorClasses = "bg-purple-950/30 text-purple-400 border-purple-900/30";
+                    else if (sysLower === 'arch') colorClasses = "bg-cyan-950/30 text-cyan-400 border-cyan-900/30";
+                    else if (sysLower === 'debian' || sysLower === 'ubuntu') colorClasses = "bg-rose-950/30 text-rose-400 border-rose-900/30";
+                    else if (sysLower === 'redhat' || sysLower === 'fedora') colorClasses = "bg-red-950/30 text-red-400 border-red-900/30";
+
+                    return `<span class="px-2 py-0.5 rounded text-[10px] font-mono border ${colorClasses}">${sys}</span>`;
+                }).join(' ');
+
+                return `
+                    <div class="bg-[#242424] border border-zinc-800/80 rounded-lg p-5 flex flex-col justify-between hover:border-zinc-700 transition-all hover:translate-y-[-2px] duration-200">
+                        <div class="space-y-3">
+                            <div class="flex items-start justify-between">
+                                <h3 class="text-md font-bold text-white font-mono">${lib.title}</h3>
+                                <span class="text-[10px] font-mono text-zinc-500 bg-zinc-800 px-2 py-0.5 rounded">addlib ${lib.name}</span>
+                            </div>
+                            <p class="text-xs text-zinc-500">Author: <span class="text-zinc-400 font-medium">${lib.author}</span></p>
+                            <p class="text-sm text-zinc-400 leading-relaxed">${lib.description}</p>
+                        </div>
+                        <div class="mt-5 pt-4 border-t border-zinc-800/60 flex flex-wrap gap-1.5">
+                            ${systemBadges}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function filterLibraries() {
+            const query = document.getElementById('search-input').value.toLowerCase().trim();
+            if (!query) {
+                renderLibraries(libraries);
+                return;
+            }
+
+            const filtered = libraries.filter(lib => {
+                return (
+                    lib.name.toLowerCase().includes(query) ||
+                    lib.title.toLowerCase().includes(query) ||
+                    lib.author.toLowerCase().includes(query) ||
+                    lib.description.toLowerCase().includes(query) ||
+                    lib.supportedSystems.some(sys => sys.toLowerCase().includes(query))
+                );
+            });
+
+            renderLibraries(filtered);
+        }
+
+        // Run application on load
+        window.onload = () => {
+            fetchRegistry();
+        };
+    </script>
+</body>
+</html>
