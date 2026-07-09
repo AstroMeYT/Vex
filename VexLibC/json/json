@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+import sys
+import json as json_lib
+
+def extract_arg(args, key):
+    """
+    Robustly extracts argument values regardless of how Vex formats or splits them.
+    """
+    # Attempt 1: Look for exact 'key=value' match in argv list
+    for arg in args:
+        if arg.startswith(f"{key}="):
+            val = arg.split("=", 1)[1]
+            return val.strip('"').strip("'")
+            
+    # Attempt 2: Reconstruct string and search (useful for JSON payloads with spaces)
+    full_str = " ".join(args)
+    if f"{key}=" in full_str:
+        try:
+            target = full_str.split(f"{key}=")[1].strip()
+            # If the value is quoted, extract everything inside the quotes
+            if target.startswith('"') or target.startswith("'"):
+                quote_char = target[0]
+                return target.split(quote_char)[1]
+            # Otherwise, just grab the next word
+            return target.split(" ")[0]
+        except Exception:
+            pass
+
+    return ""
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print("Error: No opcode provided (expected 'getkey' or 'setkey').", file=sys.stderr)
+        sys.exit(1)
+        
+    opcode = args[0].lower()
+    
+    # ---------------------------------------------------------
+    # OPCODE: getkey
+    # Usage: json.getkey(target="key1", json='{"key1": "hello"}')
+    # ---------------------------------------------------------
+    if opcode == "getkey":
+        target = extract_arg(args, "target")
+        json_str = extract_arg(args, "json")
+        
+        if not target or not json_str:
+            print("Error: Missing required 'target' or 'json' parameter.", file=sys.stderr)
+            sys.exit(1)
+            
+        try:
+            parsed = json_lib.loads(json_str)
+            if target in parsed:
+                val = parsed[target]
+                # If the extracted value is a nested object/array, return it as a JSON string
+                if isinstance(val, (dict, list)):
+                    print(json_lib.dumps(val), end="")
+                else:
+                    # Otherwise return the raw string/number
+                    print(str(val), end="")
+                sys.exit(0)
+            else:
+                # Key doesn't exist, return empty
+                print("", end="")
+                sys.exit(0)
+                
+        except json_lib.JSONDecodeError as e:
+            print(f"Error: Invalid JSON string provided. {str(e)}", file=sys.stderr)
+            sys.exit(1)
+            
+    # ---------------------------------------------------------
+    # OPCODE: setkey
+    # Usage: json.setkey(target="key1", value="new!", json='{"key1": "hello"}')
+    # ---------------------------------------------------------
+    elif opcode == "setkey":
+        target = extract_arg(args, "target")
+        value = extract_arg(args, "value")
+        json_str = extract_arg(args, "json")
+        
+        if not target or not json_str or value == "":
+            print("Error: Missing required 'target', 'value', or 'json' parameter.", file=sys.stderr)
+            sys.exit(1)
+            
+        try:
+            parsed = json_lib.loads(json_str)
+            
+            # See if the value being injected is a boolean/number/JSON array, otherwise treat as a string
+            try:
+                parsed_val = json_lib.loads(value)
+            except Exception:
+                parsed_val = value
+                
+            parsed[target] = parsed_val
+            
+            # Print the newly updated JSON string back to Vex
+            print(json_lib.dumps(parsed), end="")
+            sys.exit(0)
+            
+        except json_lib.JSONDecodeError as e:
+            print(f"Error: Invalid JSON string provided. {str(e)}", file=sys.stderr)
+            sys.exit(1)
+            
+    else:
+        print(f"Error: Unknown opcode '{opcode}'. Supported opcodes: getkey, setkey.", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
