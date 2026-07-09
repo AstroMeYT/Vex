@@ -2,5 +2,5 @@
   "library-name": "fetch",
   "supported-systems": "debian, redhat",
   "author": "Vex",
-  "description" "A lightweight fetching tool for HTTP requests. This includes GET, POST, PUT, PATCH, and DELETE."
+  "description": "A lightweight fetching tool for HTTP requests. This includes GET, POST, PUT, PATCH, and DELETE."
 }
