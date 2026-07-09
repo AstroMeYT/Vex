@@ -1,0 +1,5 @@
+{
+  "library-name": "fetch"
+  "supported-systems": "debian, redhat"
+  "author": "Vex"
+}
