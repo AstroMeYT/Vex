@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import sys
 import os
-import subprocess
 
 def extract_arg(args, key):
     """Safely extracts parameter values regardless of space splitting."""
@@ -28,10 +27,10 @@ def main():
         
     opcode = args[0]
     
-    # Feature 1: Clear the terminal screen natively
+    # Feature 1: Clear the terminal screen
     if opcode == "clear":
-        # Spawns a clean native system execution to prevent cursor ghosting
-        subprocess.run(["clear" if os.name != "nt" else "cls"])
+        # Returns the ANSI clear codes so Vex's print engine can process the clear action
+        print("\033[2J\033[H", end="")
         sys.exit(0)
         
     # Feature 2: Get terminal size
@@ -43,48 +42,45 @@ def main():
             print("80x24")
         sys.exit(0)
         
-    # Feature 3: Move cursor safely via tput/ANSI native system call
+    # Feature 3: Move cursor coordinates
     elif opcode == "move":
         x = extract_arg(args, "x")
         y = extract_arg(args, "y")
         if x and y:
-            # Writes positioning safely using standard format utilities
-            subprocess.run(f"printf '\\033[{y};{x}H'", shell=True)
+            # Returns the raw ANSI coordinate jump sequence to the capturing variable
+            print(f"\033[{y};{x}H", end="")
         sys.exit(0)
 
-    # Feature 4: Write text with a specific style/color natively
+    # Feature 4: Write text with a specific style/color
     elif opcode == "write":
         text = extract_arg(args, "text")
         color = extract_arg(args, "color").lower()
         
-        # Comprehensive fallback to reconstruct loose words if Vex drops key flags
+        # Fallback if Vex strips 'text=' and leaves loose words
         if not text and len(args) > 1:
             text_parts = [a for a in args[1:] if not a.startswith("color=")]
             text = " ".join(text_parts).strip('"')
 
+        # Translate string-escaped characters back to native formatting literals
+        if text:
+            text = text.replace(r"\n", "\n").replace(r"\t", "\t")
+
         colors = {
-            "red": "\\033[31m",
-            "green": "\\033[32m",
-            "yellow": "\\033[33m",
-            "blue": "\\033[34m",
-            "magenta": "\\033[35m",
-            "cyan": "\\033[36m",
-            "bold": "\\033[1m"
+            "red": "\033[31m",
+            "green": "\033[32m",
+            "yellow": "\033[33m",
+            "blue": "\033[34m",
+            "magenta": "\033[35m",
+            "cyan": "\033[36m",
+            "bold": "\033[1m"
         }
         
         start_code = colors.get(color, "")
-        end_code = "\\033[0m" if start_code else ""
+        end_code = "\033[0m" if start_code else ""
         
-        if text:
-            # Escape single quotes so they don't break the shell execution wrapper
-            safe_text = text.replace("'", "'\\''")
-            
-            # Use a native system printf call. This bypasses Python's IO buffer,
-            # parses \n and \t strings perfectly at the system layer, and forces
-            # the visual terminal to render the update instantly as a single block.
-            command = f"printf '{start_code}{safe_text}{end_code}\\n'"
-            subprocess.run(command, shell=True)
-            
+        # Print directly to stdout. Vex will intercept this string 
+        # and cleanly feed it to your assigned globalvar variable.
+        print(f"{start_code}{text}{end_code}", end="")
         sys.exit(0)
         
     else:
