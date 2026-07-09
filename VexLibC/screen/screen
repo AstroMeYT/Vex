@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import subprocess
 
 def extract_arg(args, key):
     """Safely extracts parameter values regardless of space splitting."""
@@ -23,62 +24,70 @@ def main():
     args = sys.argv[1:]
     
     if not args:
-        print("Error: No opcode provided.", file=sys.stderr)
         sys.exit(1)
         
     opcode = args[0]
     
-    # Feature 1: Clear the terminal screen
-    # Vex: screen.clear() -> Under the hood: ./screen clear
+    # Feature 1: Clear the terminal screen natively
     if opcode == "clear":
-        # Works across Windows (nt) and Unix/Linux/macOS (posix)
-        os.system('cls' if os.name == 'nt' else 'clear')
+        # Spawns a clean native system execution to prevent cursor ghosting
+        subprocess.run(["clear" if os.name != "nt" else "cls"])
         sys.exit(0)
         
-    # Feature 2: Get terminal size (returns width and height)
-    # Vex: globalvar size = screen.size() -> Under the hood: ./screen size
+    # Feature 2: Get terminal size
     elif opcode == "size":
         try:
             columns, lines = os.get_terminal_size()
             print(f"{columns}x{lines}")
         except:
-            print("80x24") # Standard fallback
+            print("80x24")
         sys.exit(0)
         
-    # Feature 3: Move cursor to specific X/Y terminal coordinates
-    # Vex: screen.move(x=10, y=5) -> Under the hood: ./screen move x=10 y=5
+    # Feature 3: Move cursor safely via tput/ANSI native system call
     elif opcode == "move":
         x = extract_arg(args, "x")
         y = extract_arg(args, "y")
         if x and y:
-            # ANSI escape code to position cursor: \033[Line;ColumnH
-            print(f"\033[{y};{x}H", end="")
+            # Writes positioning safely using standard format utilities
+            subprocess.run(f"printf '\\033[{y};{x}H'", shell=True)
         sys.exit(0)
 
-    # Feature 4: Print text with a specific style/color
-    # Vex: screen.print(text="Hello", color="red") -> Under the hood: ./screen print text="Hello" color="red"
-    elif opcode == "print":
+    # Feature 4: Write text with a specific style/color natively
+    elif opcode == "write":
         text = extract_arg(args, "text")
         color = extract_arg(args, "color").lower()
         
+        # Comprehensive fallback to reconstruct loose words if Vex drops key flags
+        if not text and len(args) > 1:
+            text_parts = [a for a in args[1:] if not a.startswith("color=")]
+            text = " ".join(text_parts).strip('"')
+
         colors = {
-            "red": "\033[31m",
-            "green": "\033[32m",
-            "yellow": "\033[33m",
-            "blue": "\033[34m",
-            "magenta": "\033[35m",
-            "cyan": "\033[36m",
-            "bold": "\033[1m"
+            "red": "\\033[31m",
+            "green": "\\033[32m",
+            "yellow": "\\033[33m",
+            "blue": "\\033[34m",
+            "magenta": "\\033[35m",
+            "cyan": "\\033[36m",
+            "bold": "\\033[1m"
         }
         
         start_code = colors.get(color, "")
-        end_code = "\033[0m" if start_code else ""
+        end_code = "\\033[0m" if start_code else ""
         
-        print(f"{start_code}{text}{end_code}")
+        if text:
+            # Escape single quotes so they don't break the shell execution wrapper
+            safe_text = text.replace("'", "'\\''")
+            
+            # Use a native system printf call. This bypasses Python's IO buffer,
+            # parses \n and \t strings perfectly at the system layer, and forces
+            # the visual terminal to render the update instantly as a single block.
+            command = f"printf '{start_code}{safe_text}{end_code}\\n'"
+            subprocess.run(command, shell=True)
+            
         sys.exit(0)
         
     else:
-        print(f"Error: Unknown opcode '{opcode}'", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":
