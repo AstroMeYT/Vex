@@ -3,30 +3,36 @@ import sys
 import urllib.request
 import urllib.error
 
-def extract_arg(args, key):
+def extract_url(args):
     """
-    Safely extracts the value for a given key (e.g., url="...")
-    even if Vex splits the argument by spaces.
+    Robustly extracts the URL regardless of how Vex formats or splits it.
     """
+    # 1. Look for a standard url="..." or url=...
     for arg in args:
-        if arg.startswith(f"{key}="):
+        if arg.startswith("url="):
             return arg.split("=", 1)[1].strip('"')
             
-    # Fallback: re-assemble the string if spaces split the URL
+    # 2. Look for an loose assignment if spaces split it (e.g., ['url', '=', 'http...'])
     full_str = " ".join(args)
-    if f"{key}=" in full_str:
+    if "url=" in full_str:
         try:
-            target = full_str.split(f"{key}=")[1]
+            target = full_str.split("url=")[1].strip()
             if target.startswith('"'):
                 return target.split('"')[1]
             return target.split(" ")[0]
         except:
             pass
+
+    # 3. Ultimate Fallback: Just look for any argument that looks like a web address
+    for arg in args:
+        clean_arg = arg.strip('"')
+        if clean_arg.startswith(("http://", "https://", "www.")) or "." in clean_arg:
+            if clean_arg != "http": # Don't accidentally grab the opcode
+                return clean_arg
+                
     return ""
 
 def main():
-    # Vex passes arguments separated by spaces: [path, opcode, variable1=val, ...]
-    # Example: ./fetch http url="https://example.com"
     args = sys.argv[1:]
     
     if not args:
@@ -36,10 +42,12 @@ def main():
     opcode = args[0]
     
     if opcode == "http":
-        url = extract_arg(args, "url")
+        # Extract the URL parameter first
+        url = extract_url(args)
         
+        # If it still couldn't find it, print exactly what Vex sent so you can debug it
         if not url:
-            print("Error: Missing 'url' parameter.", file=sys.stderr)
+            print(f"Error: Missing 'url' parameter. Vex sent these arguments: {args}", file=sys.stderr)
             sys.exit(1)
             
         # Ensure the URL has a proper scheme
@@ -47,15 +55,14 @@ def main():
             url = "https://" + url
 
         try:
-            # Set a standard User-Agent header to behave like cURL/browsers
+            # Set a standard User-Agent header to behave like cURL
             req = urllib.request.Request(
                 url, 
                 headers={'User-Agent': 'Mozilla/5.0 (VexLibraryFetch/1.0)'}
             )
             with urllib.request.urlopen(req, timeout=10) as response:
-                # Read the raw data and decode it to text
                 output = response.read().decode('utf-8', errors='replace')
-                # Print the exact output back to Vex to be captured by the globalvar
+                # Print the exact output back to Vex
                 print(output, end="")
                 sys.exit(0)
                 
