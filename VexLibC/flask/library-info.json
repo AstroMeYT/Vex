@@ -1,0 +1,6 @@
+{
+  "library-name": "flask",
+  "supported-systems": "debian, redhat",
+  "author": "Vex",
+  "description": "A Vex etension made for running Flask-based web servers."
+}

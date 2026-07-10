@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+import sys
+import os
+import json
+import subprocess
+import time
+import uuid
+
+# Local Vex Memory Spaces
+LIB_DIR = os.path.expanduser("~/.vex_libraries/flask")
+EVENTS_FILE = os.path.join(LIB_DIR, "events.json")
+PID_FILE = os.path.join(LIB_DIR, "server.pid")
+REQ_FILE = os.path.join(LIB_DIR, "requests.json")
+RES_FILE = os.path.join(LIB_DIR, "responses.json")
+
+def extract_arg(args, key):
+    for arg in args:
+        if arg.startswith(f"{key}="):
+            val = arg.split("=", 1)[1]
+            return val.strip('"').strip("'")
+    return ""
+
+def set_event(event_name, state):
+    """Safely updates the local IPC JSON state file"""
+    os.makedirs(LIB_DIR, exist_ok=True)
+    data = {}
+    if os.path.exists(EVENTS_FILE):
+        try:
+            with open(EVENTS_FILE, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    data[event_name] = state
+    with open(EVENTS_FILE, 'w') as f:
+        json.dump(data, f)
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        return
+
+    opcode = args[0].lower()
+
+    # -----------------------------------------------
+    # OPCODE: start (Forks server in the background)
+    # -----------------------------------------------
+    if opcode == "start":
+        port = extract_arg(args, "port") or "5000"
+        
+        # Fork the daemon process invisibly
+        script_path = os.path.abspath(__file__)
+        proc = subprocess.Popen(
+            [sys.executable, script_path, "daemon", f"port={port}"], 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.DEVNULL
+        )
+        
+        # Save PID to kill it later
+        os.makedirs(LIB_DIR, exist_ok=True)
+        with open(PID_FILE, 'w') as f:
+            f.write(str(proc.pid))
+            
+        print(f"Flask server launched on port {port}")
+
+    # -----------------------------------------------
+    # OPCODE: stop (Terminates the daemon)
+    # -----------------------------------------------
+    elif opcode == "stop":
+        if os.path.exists(PID_FILE):
+            with open(PID_FILE, 'r') as f:
+                pid = f.read().strip()
+            try:
+                import signal
+                os.kill(int(pid), signal.SIGTERM)
+                print("Flask server stopped.")
+            except Exception:
+                print("Server already stopped or PID invalid.")
+            os.remove(PID_FILE)
+        else:
+            print("No running server found.")
+
+    # -----------------------------------------------
+    # OPCODE: clear (Resets an event back to False)
+    # -----------------------------------------------
+    elif opcode == "clear":
+        event = extract_arg(args, "event")
+        if event:
+            set_event(event, False)
+
+    # -----------------------------------------------
+    # OPCODE: pop_request (Pulls oldest API request)
+    # -----------------------------------------------
+    elif opcode == "pop_request":
+        if os.path.exists(REQ_FILE):
+            try:
+                with open(REQ_FILE, 'r') as f:
+                    reqs = json.load(f)
+                if reqs and len(reqs) > 0:
+                    req = reqs.pop(0)
+                    with open(REQ_FILE, 'w') as f:
+                        json.dump(reqs, f)
+                    if len(reqs) == 0:
+                        set_event("api_request", False)
+                    print(json.dumps(req), end="")
+                    return
+            except Exception:
+                pass
+        set_event("api_request", False)
+        print("", end="")
+
+    # -----------------------------------------------
+    # OPCODE: respond (Fulfills a waiting API request)
+    # -----------------------------------------------
+    elif opcode == "respond":
+        req_id = extract_arg(args, "req_id")
+        status = extract_arg(args, "status") or "200"
+        body = extract_arg(args, "body") or ""
+        content_type = extract_arg(args, "type") or "application/json"
+
+        if not req_id:
+            print("Error: req_id required")
+            return
+
+        resps = {}
+        if os.path.exists(RES_FILE):
+            try:
+                with open(RES_FILE, 'r') as f:
+                    resps = json.load(f)
+            except Exception:
+                pass
+
+        resps[req_id] = {
+            "status": int(status),
+            "body": body,
+            "type": content_type
+        }
+
+        with open(RES_FILE, 'w') as f:
+            json.dump(resps, f)
+        
+        print("OK", end="")
+
+    # -----------------------------------------------
+    # OPCODE: daemon (The actual blocking Flask app)
+    # -----------------------------------------------
+    elif opcode == "daemon":
+        try:
+            from flask import Flask, jsonify, request, Response
+        except ImportError:
+            sys.exit(1)
+            
+        port = int(extract_arg(args, "port") or "5000")
+        app = Flask(__name__)
+
+        # Basic Root Interface
+        @app.route('/')
+        def index():
+            return """
+            <html>
+                <body style="background:#1c1c1c; color:#fff; font-family:sans-serif; text-align:center; padding:50px;">
+                    <h2>Vex Web-to-Script Interface</h2>
+                    <p>Try sending a GET request to <code>/api/hello</code> or <code>/api/status</code>!</p>
+                </body>
+            </html>
+            """
+
+        # Generic API route to trigger events asynchronously
+        @app.route('/trigger/<event_name>', methods=['GET', 'POST'])
+        def trigger(event_name):
+            set_event(event_name, True)
+            return jsonify({"status": "success", "event": event_name})
+
+        # DYNAMIC API GATEWAY
+        @app.route('/api/<path:route>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
+        def api_gateway(route):
+            req_id = str(uuid.uuid4())
+            req_data = {
+                "id": req_id,
+                "method": request.method,
+                "route": route,
+                "data": request.get_data(as_text=True)
+            }
+            
+            # Save to requests queue
+            reqs = []
+            if os.path.exists(REQ_FILE):
+                try:
+                    with open(REQ_FILE, 'r') as f:
+                        reqs = json.load(f)
+                except Exception:
+                    pass
+            reqs.append(req_data)
+            with open(REQ_FILE, 'w') as f:
+                json.dump(reqs, f)
+                
+            # Alert Vex Engine
+            set_event("api_request", True)
+            
+            # Poll for Vex to respond (Timeout after 15 seconds)
+            for _ in range(150):
+                if os.path.exists(RES_FILE):
+                    try:
+                        with open(RES_FILE, 'r') as f:
+                            resps = json.load(f)
+                        if req_id in resps:
+                            resp_data = resps.pop(req_id)
+                            # Cleanup response queue
+                            with open(RES_FILE, 'w') as f:
+                                json.dump(resps, f)
+                            
+                            return Response(
+                                response=resp_data.get("body", ""),
+                                status=int(resp_data.get("status", 200)),
+                                content_type=resp_data.get("type", "application/json")
+                            )
+                    except Exception:
+                        pass
+                time.sleep(0.1)
+                
+            return jsonify({"error": "Vex script took too long to respond."}), 504
+
+        # Clear memory state on fresh boot
+        for file in [EVENTS_FILE, REQ_FILE, RES_FILE]:
+            if os.path.exists(file):
+                os.remove(file)
+
+        # Disable reloader so it doesn't duplicate the forked processes
+        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+if __name__ == "__main__":
+    main()
