@@ -111,6 +111,7 @@ void throw_error(const std::string& msg, int line_num, int char_pos = -1) {
 }
 
 Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, ExecutionState& state, int line_num);
+std::string get_lib_directory();
 
 // ==========================================
 // Expression Tokenizer & Parser
@@ -461,12 +462,35 @@ bool check_key_pressed(const std::string& key_name) {
 }
 
 Value evaluate(std::string expr, Scope& local_vars, Scope& global_vars, ExecutionState& state, int line_num) {
-    std::regex event_pattern("event:button-down\\.([a-zA-Z0-9_-]+)");
+    std::regex event_pattern("event:([a-zA-Z0-9_-]+)\\.([a-zA-Z0-9_-]+)");
     std::smatch m;
     while (std::regex_search(expr, m, event_pattern)) {
-        std::string key_name = m[1].str();
-        bool pressed = check_key_pressed(key_name);
-        expr.replace(m.position(0), m.length(0), pressed ? "True" : "False");
+        std::string domain = m[1].str();
+        std::string event_name = m[2].str();
+        bool event_active = false;
+
+        if (domain == "button-down") {
+            // Keep native hardware keyboard tracking intact
+            event_active = check_key_pressed(event_name);
+        } else {
+            // IPC Check: Look for an active event inside the library's JSON state file
+            std::string event_file = get_lib_directory() + "/" + domain + "/events.json";
+            std::ifstream ef(event_file);
+            if (ef.is_open()) {
+                std::string content((std::istreambuf_iterator<char>(ef)), std::istreambuf_iterator<char>());
+                // Strip whitespaces to make the C++ string search foolproof
+                std::string no_spaces = content;
+                no_spaces.erase(std::remove_if(no_spaces.begin(), no_spaces.end(), ::isspace), no_spaces.end());
+                
+                std::string search_str1 = "\"" + event_name + "\":true";
+                std::string search_str2 = "\"" + event_name + "\":1";
+                
+                if (no_spaces.find(search_str1) != std::string::npos || no_spaces.find(search_str2) != std::string::npos) {
+                    event_active = true;
+                }
+            }
+        }
+        expr.replace(m.position(0), m.length(0), event_active ? "True" : "False");
     }
 
     size_t event_pos;
